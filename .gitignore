@@ -1,0 +1,35 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.env
+
+# FastAPI / general
+*.log
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Alembic cache
+alembic/versions/__pycache__/
+
+frontend\node_modules
+# backend
+backend/venv/
+
+# frontend
+frontend/node_modules/
+frontend/.next/
+
+# env files
+.env

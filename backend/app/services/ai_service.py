@@ -4,12 +4,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Using Nvidia NIM's OpenAI-compatible endpoint
+client = OpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key=os.getenv("NVIDIA_API_KEY")
+)
 
+# Default to a powerful instruct model hosted by Nvidia NIM
+NIM_MODEL = "meta/llama3-70b-instruct"
 
 def explain_move(move: str, move_type: str, score: float, best_move: str) -> str:
     """
-    Sends move data to OpenAI and returns a human-readable explanation.
+    Sends move data to Nvidia NIM and returns a human-readable explanation.
     """
     prompt = (
         f"You are a chess coach. A player played the move {move}, "
@@ -21,7 +27,7 @@ def explain_move(move: str, move_type: str, score: float, best_move: str) -> str
     )
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=NIM_MODEL,
         messages=[
             {"role": "system", "content": "You are a helpful chess coach assistant."},
             {"role": "user", "content": prompt}
@@ -35,7 +41,7 @@ def explain_move(move: str, move_type: str, score: float, best_move: str) -> str
 
 def explain_game_summary(results: list) -> str:
     """
-    Sends full game analysis to OpenAI and returns an overall game summary.
+    Sends full game analysis to Nvidia NIM and returns an overall game summary.
     """
     blunders = sum(1 for r in results if r["type"] == "blunder")
     mistakes = sum(1 for r in results if r["type"] == "mistake")
@@ -51,7 +57,7 @@ def explain_game_summary(results: list) -> str:
     )
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=NIM_MODEL,
         messages=[
             {"role": "system", "content": "You are a helpful chess coach assistant."},
             {"role": "user", "content": prompt}

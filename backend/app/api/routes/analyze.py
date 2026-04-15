@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional
 from app.schemas.analysis_schema import AnalysisRequest, AnalysisResponse
 from app.services.pgn_service import parse_pgn
 from app.services.engine_service import analyze_position
@@ -10,8 +12,25 @@ from app.models.game import Game
 
 router = APIRouter(prefix="/analyze", tags=["Analysis"])
 
+class PositionRequest(BaseModel):
+    fen: str
+    depth: Optional[int] = 15
 
-@router.post("", response_model=AnalysisResponse)
+@router.post("", response_model=dict)
+def analyze_single_position(request: PositionRequest):
+    """
+    Evaluates a single position (FEN) and returns eval, mate, and best move.
+    """
+    result = analyze_position(request.fen, depth=request.depth)
+    return {
+        "evaluation": result["evaluation"],
+        "mate": result["mate"],
+        "bestMove": result["best_move"] or "",
+        "depth": result["depth"],
+        "lines": []
+    }
+
+@router.post("/game", response_model=AnalysisResponse)
 def analyze_game(request: AnalysisRequest, db: Session = Depends(get_db)):
     """
     Accepts a PGN string, analyzes every move with Stockfish,

@@ -13,19 +13,26 @@ if not STOCKFISH_PATH:
 engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
 
 
-def analyze_position(fen: str):
+def analyze_position(fen: str, depth: int = 15):
     board = chess.Board(fen)
 
     # 🔥 Single call (faster + cleaner)
-    info = engine.analyse(board, chess.engine.Limit(depth=15))
+    info = engine.analyse(board, chess.engine.Limit(depth=depth))
 
-    score = info["score"].white().score(mate_score=10000)
+    pov_score = info["score"].white()
+    score = pov_score.score()
+    mate = pov_score.mate()
 
     best_move = None
     if "pv" in info and len(info["pv"]) > 0:
         best_move = info["pv"][0].uci()
 
+    evaluation = score / 100 if score is not None else 0
+
     return {
-        "score": score / 100 if score is not None else 0,
+        "score": evaluation,
+        "evaluation": evaluation,
+        "mate": mate,
+        "depth": depth,
         "best_move": best_move
     }

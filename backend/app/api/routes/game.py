@@ -1,11 +1,26 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.game import Game
 from app.schemas.game_schema import GameCreate, GameOut
+from app.services.pgn_service import parse_pgn_detailed
 
 router = APIRouter(prefix="/games", tags=["Games"])
 
+class GameImportRequest(BaseModel):
+    pgn: str = ""
+    fen: str = ""
+
+@router.post("/import", response_model=dict)
+def import_game(payload: GameImportRequest):
+    """Parses a PGN into SAN moves, FENs, and headers."""
+    if not payload.pgn:
+        return {"initialFen": payload.fen, "headers": {}, "moves": []}
+    try:
+        return parse_pgn_detailed(payload.pgn)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("", response_model=GameOut, status_code=201)
 def save_game(payload: GameCreate, db: Session = Depends(get_db)):

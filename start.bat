@@ -1,6 +1,10 @@
 @echo off
 echo ♟️ Starting Shatranj...
 
+REM Start Docker containers
+echo Starting Docker containers (Postgres & Redis)...
+docker compose up -d
+
 REM Start Backend in a new window
 echo Starting Backend Server (FastAPI)...
 start "Shatranj Backend" cmd /k "cd backend && (if exist venv\Scripts\activate.bat call venv\Scripts\activate.bat) && uvicorn app.main:app --reload --port 8000"

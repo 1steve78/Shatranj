@@ -2,6 +2,9 @@
 
 echo "♟️ Starting Shatranj..."
 
+echo "Starting Docker containers (Postgres & Redis)..."
+docker compose up -d
+
 # Start backend in background
 echo "Starting Backend Server (FastAPI)..."
 (cd backend && source venv/Scripts/activate 2>/dev/null || true && uvicorn app.main:app --reload --port 8000) &

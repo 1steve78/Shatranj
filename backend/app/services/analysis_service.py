@@ -15,30 +15,41 @@ def calculate_cp_loss(prev_score, new_score, is_white_turn):
     diff = prev_score - new_score if is_white_turn else new_score - prev_score
     return max(0, diff) # Never negative CP loss
 
-def classify_move(cp_loss, prev_score, new_score, is_white_turn, is_best_move=False, is_sacrifice=False):
-    # Missed win: Was previously winning >300, now dropped below <100
-    prev_eval_for_player = prev_score if is_white_turn else -prev_score
-    new_eval_for_player = new_score if is_white_turn else -new_score
-    
-    if prev_eval_for_player > 300 and new_eval_for_player < 100:
-        return "miss"
+def calculate_move_accuracy(cp_loss: float) -> float:
+    """
+    Calculates move accuracy based on Centipawn (CP) loss using a Sigmoid curve.
+    """
+    accuracy = 100 * math.exp(-0.004 * cp_loss)
+    return round(accuracy, 2)
 
-    if is_sacrifice and cp_loss < 20 and is_best_move:
+def classify_move(cp_loss, prev_score, new_score, is_white_turn, is_best_move=False, is_sacrifice=False):
+    accuracy = calculate_move_accuracy(cp_loss)
+    
+    # Brilliant: cp_loss < 10 and is a sacrifice OR accuracy > 98 in critical pos
+    if (cp_loss < 10 and is_sacrifice) or (accuracy > 98 and is_sacrifice):
         return "brilliant"
-    if cp_loss <= 5:
-        return "best" if is_best_move else "great"
-    if cp_loss <= 25:
+        
+    # Great Move: accuracy > 95 and it was the only move that didn't result in a disadvantage
+    # We use accuracy > 95 and best move as approximation
+    if accuracy > 95 and is_best_move and cp_loss > 0:
+        return "great"
+        
+    if is_best_move or cp_loss == 0:
+        return "best"
+        
+    if accuracy >= 80:
         return "good"
-    if cp_loss <= 100:
+        
+    if accuracy >= 60:
         return "inaccuracy"
-    if cp_loss <= 300:
+        
+    if accuracy >= 30:
         return "mistake"
+        
     return "blunder"
 
 def estimate_elo_performance(accuracy, player_elo=1200):
     # A simple linear/exponential Bayesian anchor mapping
-    # 100% accuracy -> +600 ELO performance above default rating
-    # 50% accuracy -> -400 ELO performance
     rating_modifier = ((accuracy / 100.0) - 0.70) * 1200
     perf = player_elo + rating_modifier
     return max(100, int(perf))
@@ -61,10 +72,10 @@ def extract_tactical_motifs(board, move_str):
     
     return motifs
 
-def calculate_accuracy(avg_cp_loss):
-    # Approximation of CAPS formula
-    acc = 103.1668 * math.exp(-0.04354 * avg_cp_loss) - 3.1669
-    return max(0.0, min(100.0, acc))
+def calculate_accuracy(move_accuracies):
+    if not move_accuracies:
+        return 0.0
+    return round(sum(move_accuracies) / len(move_accuracies), 1)
     
 def get_game_phase(move_num, board):
     if move_num <= 10:

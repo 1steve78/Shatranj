@@ -200,25 +200,53 @@ export function useAnalysis() {
                     gameAnalysisProgress: { completed: 0, total: gameFens.length },
                 }));
 
-                const analysisEntries = await Promise.all(
-                    gameFens.map(async (fen, index) => {
-                        const result = await analyzePosition({ fen, depth: 20 });
+                const analysisEntries: [number, PositionAnalysis][] = [];
+                const wsUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/^http/, "ws");
+                
+                await new Promise<void>((resolve, reject) => {
+                    const ws = new WebSocket(`${wsUrl}/analyze/stream`);
+                    let completedCount = 0;
 
-                        setState((s) => (
-                            analysisRunRef.current === runId
-                                ? {
-                                    ...s,
-                                    gameAnalysisProgress: {
-                                        completed: Math.min(s.gameAnalysisProgress.completed + 1, gameFens.length),
-                                        total: gameFens.length,
-                                    },
+                    ws.onopen = () => {
+                        ws.send(JSON.stringify({ fens: gameFens, depth: 15 }));
+                    };
+
+                    ws.onmessage = (event) => {
+                        if (analysisRunRef.current !== runId) {
+                            ws.close();
+                            return;
+                        }
+
+                        const data = JSON.parse(event.data);
+                        if (data.type === "eval") {
+                            const result = toPositionAnalysis(data.result);
+                            analysisEntries.push([data.index, result]);
+                            completedCount++;
+                            
+                            setState((s) => ({
+                                ...s,
+                                analysisByMoveIndex: {
+                                    ...s.analysisByMoveIndex,
+                                    [data.index]: result
+                                },
+                                gameAnalysisProgress: {
+                                    completed: completedCount,
+                                    total: gameFens.length,
                                 }
-                                : s
-                        ));
+                            }));
+                        } else if (data.type === "done") {
+                            ws.close();
+                            resolve();
+                        } else if (data.type === "error") {
+                            ws.close();
+                            reject(new Error(data.message));
+                        }
+                    };
 
-                        return [index, toPositionAnalysis(result)] as const;
-                    })
-                );
+                    ws.onerror = () => {
+                        reject(new Error("WebSocket error"));
+                    };
+                });
 
                 const opening = await openingPromise;
                 const analysisByMoveIndex = Object.fromEntries(analysisEntries) as Record<number, PositionAnalysis>;

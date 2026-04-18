@@ -22,7 +22,9 @@ def explain_move(move: str, move_type: str, score: float, best_move: str) -> str
         f"which is classified as a '{move_type}'. "
         f"The engine evaluation after this move is {score:.2f} pawns (from White's perspective). "
         f"The best move was {best_move}. "
-        f"In 2-3 sentences, explain why this move is a {move_type} and what the player should have done instead. "
+        f"In 2-3 sentences, explain why this move is a '{move_type}'. "
+        f"Don't just describe the move. Explain the tactical theme (e.g., 'You missed a fork', 'This allows a back-rank mate', or 'You failed to punish their exposed King'). "
+        f"Compare the player's move to the engine move in human terms. "
         f"Be concise, clear, and instructive."
     )
 

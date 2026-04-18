@@ -140,6 +140,8 @@ async def fetch_opening_explorer(fen: str):
             logger.warning(f"Lichess Explorer API error: {e}")
     return {"is_book": False, "name": None, "eco": None}
 
+engine_semaphore = asyncio.Semaphore(4)
+
 async def analyze_position_async(fen: str, depth: int = 18):
     # Try lichess first
     cached = await fetch_lichess_cloud_eval(fen, multipv=3)
@@ -148,4 +150,5 @@ async def analyze_position_async(fen: str, depth: int = 18):
 
     # Fallback to local synchronous engine via threadpool
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, analyze_position, fen, depth)
+    async with engine_semaphore:
+        return await loop.run_in_executor(None, analyze_position, fen, depth)

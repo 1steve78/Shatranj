@@ -6,6 +6,9 @@ import ChessBoard from "@/components/ChessBoard";
 import EvalBar from "@/components/EvalBar";
 import MoveList from "@/components/MoveList";
 import ChatBox from "@/components/ChatBox";
+import AccuracyGauge from "@/components/AccuracyGauge";
+import MoveTimeline from "@/components/MoveTimeline";
+import { getMoveClassification } from "@/lib/analysisLogic";
 import { useAnalysis } from "@/hooks/useAnalysis";
 
 function AnalyzePage() {
@@ -15,6 +18,7 @@ function AnalyzePage() {
     fen, evaluation, mate, bestMove, bestMoveArrows, depth, moves, currentMoveIndex, opening,
     currentMoveInsight, gameAnalysisProgress, chatMessages, isChatLoading, isAnalyzing, isGameAnalyzing, isImporting, error,
     analyze, goToMove, goBack, goForward, importPgn, sendMessage, clearError,
+    analysisByMoveIndex, parsedGame
   } = useAnalysis();
 
   const [flipped, setFlipped] = useState(false);
@@ -24,6 +28,26 @@ function AnalyzePage() {
   const [copyLabel, setCopyLabel] = useState("Copy FEN");
   const [activePanel, setActivePanel] = useState<"moves" | "chat">("moves");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { whiteAccuracy, blackAccuracy } = React.useMemo(() => {
+    if (!parsedGame) return { whiteAccuracy: 0, blackAccuracy: 0 };
+    const wAccs: number[] = [];
+    const bAccs: number[] = [];
+    for (let i = 1; i <= parsedGame.moves.length; i++) {
+        const isWhite = i % 2 !== 0;
+        const prev = analysisByMoveIndex[i - 1];
+        const curr = analysisByMoveIndex[i];
+        if (prev && curr) {
+            const { type, accuracy } = getMoveClassification(prev, curr, isWhite);
+            if (type !== "pending") {
+                if (isWhite) wAccs.push(accuracy);
+                else bAccs.push(accuracy);
+            }
+        }
+    }
+    const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+    return { whiteAccuracy: avg(wAccs), blackAccuracy: avg(bAccs) };
+  }, [parsedGame, analysisByMoveIndex]);
 
   useEffect(() => {
     const pgn = searchParams.get("pgn");
@@ -865,7 +889,12 @@ function AnalyzePage() {
           </div>
 
           {/* Right panel */}
-          <div className="right-panel">
+          <div className="right-panel" style={{ overflowY: "auto" }}>
+            {parsedGame && parsedGame.moves.length > 0 && (
+              <div style={{ padding: "16px 0", borderBottom: "1px solid #1a1510", background: "#0a0805" }}>
+                <AccuracyGauge whiteAccuracy={whiteAccuracy} blackAccuracy={blackAccuracy} />
+              </div>
+            )}
             <div className="panel-tabs">
               <button
                 className={`panel-tab${activePanel === "moves" ? " active" : ""}`}
@@ -896,6 +925,16 @@ function AnalyzePage() {
                 />
               )}
             </div>
+            
+            {parsedGame && parsedGame.moves.length > 0 && (
+                <MoveTimeline 
+                    totalMoves={parsedGame.moves.length}
+                    analysisByMoveIndex={analysisByMoveIndex}
+                    currentMoveIndex={currentMoveIndex}
+                    onMoveClick={goToMove}
+                />
+            )}
+
             <div className="fen-strip">
               <span className="fen-text">{fen}</span>
               <button className="fen-copy-btn" onClick={copyFen}>{copyLabel}</button>

@@ -1,16 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from app.schemas.analysis_schema import AnalysisRequest, AnalysisResponse
 from app.services.pgn_service import parse_pgn
 from app.services.engine_service import analyze_position_async, analyze_position, fetch_opening_explorer
-from app.services.analysis_service import classify_move, calculate_cp_loss, calculate_accuracy, get_game_phase, estimate_elo_performance, extract_tactical_motifs
+from app.services.analysis_service import classify_move, calculate_cp_loss, calculate_accuracy, get_game_phase, estimate_elo_performance, extract_tactical_motifs, calculate_move_accuracy
 from app.services.ai_service import explain_move, explain_game_summary
 from app.db.session import get_db
 from app.models.game import Game
 import asyncio
 import chess
+import json
 
 router = APIRouter(prefix="/analyze", tags=["Analysis"])
 
@@ -107,8 +108,8 @@ async def analyze_game(request: AnalysisRequest, db: Session = Depends(get_db)):
     if key_moment_idx != -1:
         results[key_moment_idx]["is_key_moment"] = True
 
-    avg_cp_loss = total_cp_loss / len(positions) if positions else 0.0
-    accuracy = calculate_accuracy(avg_cp_loss)
+    move_accuracies = [calculate_move_accuracy(r["cp_loss"]) for r in results]
+    accuracy = calculate_accuracy(move_accuracies) if results else 0.0
     estimated_elo = estimate_elo_performance(accuracy, player_elo=1200)
 
     # Phase 3: LLM Calls (Critical Moves Only)
@@ -145,3 +146,30 @@ async def analyze_game(request: AnalysisRequest, db: Session = Depends(get_db)):
         "accuracy": accuracy,
         "estimated_elo": estimated_elo
     }
+
+@router.websocket("/stream")
+async def analyze_stream(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        data = await websocket.receive_text()
+        req = json.loads(data)
+        fens = req.get("fens", [])
+        depth = req.get("depth", 15)
+        
+        async def evaluate_and_send(index, fen):
+            try:
+                result = await analyze_position_async(fen, depth=depth)
+                await websocket.send_json({"type": "eval", "index": index, "result": result})
+            except Exception as e:
+                pass
+                
+        # Fire off all evaluations concurrently (bounded by our semaphore in engine_service)
+        tasks = [evaluate_and_send(i, fen) for i, fen in enumerate(fens)]
+        await asyncio.gather(*tasks)
+        
+        await websocket.send_json({"type": "done"})
+        
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        await websocket.send_json({"type": "error", "message": str(e)})

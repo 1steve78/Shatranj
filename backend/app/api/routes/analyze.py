@@ -4,11 +4,13 @@ from pydantic import BaseModel
 from typing import Optional
 from app.schemas.analysis_schema import AnalysisRequest, AnalysisResponse
 from app.services.pgn_service import parse_pgn
-from app.services.engine_service import analyze_position
-from app.services.analysis_service import classify_move
+from app.services.engine_service import analyze_position_async, analyze_position, fetch_opening_explorer
+from app.services.analysis_service import classify_move, calculate_cp_loss, calculate_accuracy, get_game_phase, estimate_elo_performance, extract_tactical_motifs
 from app.services.ai_service import explain_move, explain_game_summary
 from app.db.session import get_db
 from app.models.game import Game
+import asyncio
+import chess
 
 router = APIRouter(prefix="/analyze", tags=["Analysis"])
 
@@ -27,15 +29,12 @@ def analyze_single_position(request: PositionRequest):
         "mate": result["mate"],
         "bestMove": result["best_move"] or "",
         "depth": result["depth"],
-        "lines": []
+        "lines": result.get("pv_lines", []),
+        "best_move_arrows": result.get("best_move_arrows", [])
     }
 
 @router.post("/game", response_model=AnalysisResponse)
-def analyze_game(request: AnalysisRequest, db: Session = Depends(get_db)):
-    """
-    Accepts a PGN string, analyzes every move with Stockfish,
-    classifies each move, and optionally generates AI explanations.
-    """
+async def analyze_game(request: AnalysisRequest, db: Session = Depends(get_db)):
     try:
         positions = parse_pgn(request.pgn)
     except Exception:
@@ -44,39 +43,105 @@ def analyze_game(request: AnalysisRequest, db: Session = Depends(get_db)):
     if not positions:
         raise HTTPException(status_code=400, detail="No moves found in PGN.")
 
+    # Phase 0.5: Early-Exit Opening Book Fetch
+    book_moves = {}
+    is_out_of_book = False
+    for i, pos in enumerate(positions[:15]):
+        if is_out_of_book:
+            break
+        book_data = await fetch_opening_explorer(pos["fen"])
+        if book_data["is_book"]:
+            book_moves[i] = book_data
+        else:
+            is_out_of_book = True
+
+    # Phase 1: Parallel Engine Evaluations
+    tasks = [analyze_position_async(pos["fen"], depth=18) for pos in positions]
+    evaluations = await asyncio.gather(*tasks)
+
     results = []
     prev_score = 0.0
+    total_cp_loss = 0.0
+    
+    max_cp_swing = 0
+    key_moment_idx = -1
+    
+    # Phase 2: Heuristics & Classification
+    for i, (pos, analysis) in enumerate(zip(positions, evaluations)):
+        is_white_turn = (i % 2 == 0) # Assumes standard PGN starting from move 1 White.
+        
+        # Fallback dictionary keys for PV safety
+        pv_lines = analysis.get("pv_lines", [])
+        score = analysis.get("score", 0)
+        best_move = analysis.get("best_move", "")
 
-    for pos in positions:
-        analysis = analyze_position(pos["fen"])
-        move_type = classify_move(prev_score, analysis["score"])
-
-        explanation = None
-        if request.explain:
-            explanation = explain_move(
-                move=pos["move"],
-                move_type=move_type,
-                score=analysis["score"],
-                best_move=analysis["best_move"] or "N/A"
-            )
+        cp_loss = calculate_cp_loss(prev_score, score, is_white_turn)
+        total_cp_loss += cp_loss
+        
+        if i in book_moves:
+            move_type = "book"
+        else:
+            move_type = classify_move(cp_loss, prev_score, score, is_white_turn, is_best_move=(pos["move"] == best_move))
+            if cp_loss > max_cp_swing:
+                max_cp_swing = cp_loss
+                key_moment_idx = i
+                
+        board = chess.Board(pos["fen"])
+        motifs = extract_tactical_motifs(chess.Board(pos.get("before_fen", pos["fen"])), pos["move"])
+        phase = get_game_phase(i // 2 + 1, board)
 
         results.append({
             "move": pos["move"],
-            "score": analysis["score"],
-            "best_move": analysis["best_move"],
+            "score": score,
+            "best_move": best_move,
             "type": move_type,
-            "explanation": explanation
+            "explanation": None,
+            "cp_loss": cp_loss,
+            "pv_lines": pv_lines,
+            "motifs": motifs,
+            "phase": phase,
+            "is_key_moment": False
         })
+        prev_score = score
+        
+    if key_moment_idx != -1:
+        results[key_moment_idx]["is_key_moment"] = True
 
-        prev_score = analysis["score"]
+    avg_cp_loss = total_cp_loss / len(positions) if positions else 0.0
+    accuracy = calculate_accuracy(avg_cp_loss)
+    estimated_elo = estimate_elo_performance(accuracy, player_elo=1200)
 
-    summary = None
+    # Phase 3: LLM Calls (Critical Moves Only)
     if request.explain:
-        summary = explain_game_summary(results)
+        critical_types = {"blunder", "mistake", "great", "brilliant", "miss"}
+        llm_tasks = []
+        task_indices = []
 
-    # Persist the game PGN to DB
+        for idx, res in enumerate(results):
+            if res["type"] in critical_types:
+                # Add tactical context to help LLM
+                motif_str = f" Context: Engine identified {', '.join(res['motifs'])}." if res["motifs"] else ""
+                llm_tasks.append(asyncio.to_thread(
+                    explain_move, res["move"], res["type"], res["score"], (res["best_move"] or "N/A") + motif_str
+                ))
+                task_indices.append(idx)
+
+        explanations = await asyncio.gather(*llm_tasks) if llm_tasks else []
+        for idx, exp in zip(task_indices, explanations):
+            results[idx]["explanation"] = exp
+        
+        summary = await asyncio.to_thread(explain_game_summary, results)
+    else:
+        summary = None
+
+    # Persist the game
     db_game = Game(pgn=request.pgn)
     db.add(db_game)
     db.commit()
 
-    return {"analysis": results, "summary": summary}
+    return {
+        "analysis": results, 
+        "summary": summary, 
+        "accuracy": accuracy,
+        "estimated_elo": estimated_elo
+    }

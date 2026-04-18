@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from "react";
 import {
     analyzePosition,
     sendChatMessage,
+    getPgnInsights,
     importGame,
     lookupOpening,
     type AnalysisResult,
@@ -18,49 +19,106 @@ interface AnalysisState {
     evaluation: number;
     mate: number | null;
     bestMove: string | null;
+    bestMoveArrows: string[][];
     depth: number;
     moves: Move[];
     currentMoveIndex: number;
     parsedGame: ParsedGame | null;
     opening: OpeningInfo | null;
+    analysisByMoveIndex: Record<number, PositionAnalysis>;
+    moveInsightsByIndex: Record<number, string>;
+    currentMoveInsight: string | null;
+    gameAnalysisProgress: { completed: number; total: number };
     chatMessages: ChatMessage[];
     isChatLoading: boolean;
     isAnalyzing: boolean;
+    isGameAnalyzing: boolean;
     isImporting: boolean;
     error: string | null;
 }
 
+type PositionAnalysis = Pick<AnalysisState, "evaluation" | "mate" | "bestMove" | "bestMoveArrows" | "depth">;
+
+function looksLikeFen(input: string) {
+    return /^[rnbqkpRNBQKP1-8/]+ [wb](?: |$)/.test(input.trim());
+}
+
+function getFenAtMove(game: ParsedGame, halfMoveIndex: number) {
+    return halfMoveIndex === 0
+        ? game.initialFen
+        : game.moves[halfMoveIndex - 1]?.fen ?? game.initialFen;
+}
+
+function toMoveList(game: ParsedGame): Move[] {
+    const moves: Move[] = [];
+
+    for (let i = 0; i < game.moves.length; i += 2) {
+        moves.push({
+            moveNumber: Math.floor(i / 2) + 1,
+            white: game.moves[i].san,
+            black: game.moves[i + 1]?.san,
+        });
+    }
+
+    return moves;
+}
+
+function toArrowList(result: AnalysisResult) {
+    return (result.best_move_arrows ?? []).filter(
+        (arrow): arrow is string[] =>
+            Array.isArray(arrow) && arrow.length >= 2 && arrow.every((sq) => typeof sq === "string")
+    );
+}
+
+function toPositionAnalysis(result: AnalysisResult): PositionAnalysis {
+    return {
+        evaluation: result.evaluation,
+        mate: result.mate,
+        bestMove: result.bestMove,
+        bestMoveArrows: toArrowList(result),
+        depth: result.depth,
+    };
+}
+
+function getGameFens(game: ParsedGame) {
+    return [game.initialFen, ...game.moves.map((move) => move.fen)];
+}
+
 export function useAnalysis() {
+    const analysisRunRef = useRef(0);
+
     const [state, setState] = useState<AnalysisState>({
         fen: STARTING_FEN,
         evaluation: 0,
         mate: null,
         bestMove: null,
+        bestMoveArrows: [],
         depth: 0,
         moves: [],
         currentMoveIndex: 0,
         parsedGame: null,
         opening: null,
+        analysisByMoveIndex: {},
+        moveInsightsByIndex: {},
+        currentMoveInsight: null,
+        gameAnalysisProgress: { completed: 0, total: 0 },
         chatMessages: [],
         isChatLoading: false,
         isAnalyzing: false,
+        isGameAnalyzing: false,
         isImporting: false,
         error: null,
     });
 
-    const abortRef = useRef<AbortController | null>(null);
-
-    // ─── Analyze ──────────────────────────────────────────────────────────────
     const analyze = useCallback(async (fen: string, depth = 20) => {
         setState((s) => ({ ...s, isAnalyzing: true, error: null }));
+
         try {
-            const result: AnalysisResult = await analyzePosition({ fen, depth });
+            const result = await analyzePosition({ fen, depth });
+            const analysis = toPositionAnalysis(result);
             setState((s) => ({
                 ...s,
-                evaluation: result.evaluation,
-                mate: result.mate,
-                bestMove: result.bestMove,
-                depth: result.depth,
+                ...analysis,
                 isAnalyzing: false,
             }));
         } catch (err) {
@@ -72,89 +130,158 @@ export function useAnalysis() {
         }
     }, []);
 
-    // ─── Navigate moves ────────────────────────────────────────────────────────
     const goToMove = useCallback(
-        async (halfMoveIndex: number) => {
-            setState((s) => {
-                if (!s.parsedGame) return s;
-                const fenAtMove =
-                    halfMoveIndex === 0
-                        ? s.parsedGame.initialFen
-                        : s.parsedGame.moves[halfMoveIndex - 1]?.fen ?? s.fen;
-                return { ...s, currentMoveIndex: halfMoveIndex, fen: fenAtMove };
-            });
-            // Re-analyze after navigation
-            setState((prev) => {
-                analyze(prev.fen);
-                return prev;
-            });
+        (halfMoveIndex: number) => {
+            const game = state.parsedGame;
+            if (!game) return;
+
+            const next = Math.max(0, Math.min(halfMoveIndex, game.moves.length));
+            const nextFen = getFenAtMove(game, next);
+            const cachedAnalysis = state.analysisByMoveIndex[next];
+            const currentMoveInsight = state.moveInsightsByIndex[next] ?? null;
+
+            setState((s) => ({
+                ...s,
+                ...(cachedAnalysis ?? {}),
+                currentMoveInsight,
+                currentMoveIndex: next,
+                fen: nextFen,
+            }));
+
+            if (!cachedAnalysis && !state.isGameAnalyzing) {
+                void analyze(nextFen);
+            }
         },
-        [analyze]
+        [analyze, state.analysisByMoveIndex, state.isGameAnalyzing, state.moveInsightsByIndex, state.parsedGame]
     );
 
     const goBack = useCallback(() => {
-        setState((s) => {
-            const next = Math.max(0, s.currentMoveIndex - 1);
-            const fenAtMove =
-                next === 0
-                    ? s.parsedGame?.initialFen ?? STARTING_FEN
-                    : s.parsedGame?.moves[next - 1]?.fen ?? s.fen;
-            return { ...s, currentMoveIndex: next, fen: fenAtMove };
-        });
-    }, []);
+        if (!state.parsedGame) return;
+        goToMove(state.currentMoveIndex - 1);
+    }, [goToMove, state.currentMoveIndex, state.parsedGame]);
 
     const goForward = useCallback(() => {
-        setState((s) => {
-            if (!s.parsedGame) return s;
-            const next = Math.min(s.parsedGame.moves.length, s.currentMoveIndex + 1);
-            const fenAtMove = s.parsedGame.moves[next - 1]?.fen ?? s.fen;
-            return { ...s, currentMoveIndex: next, fen: fenAtMove };
-        });
-    }, []);
+        if (!state.parsedGame) return;
+        goToMove(state.currentMoveIndex + 1);
+    }, [goToMove, state.currentMoveIndex, state.parsedGame]);
 
-    // ─── Import game ───────────────────────────────────────────────────────────
     const importPgn = useCallback(
-        async (pgn: string) => {
-            setState((s) => ({ ...s, isImporting: true, error: null }));
+        async (input: string) => {
+            const trimmed = input.trim();
+            const runId = analysisRunRef.current + 1;
+            analysisRunRef.current = runId;
+
+            setState((s) => ({
+                ...s,
+                analysisByMoveIndex: {},
+                moveInsightsByIndex: {},
+                currentMoveInsight: null,
+                gameAnalysisProgress: { completed: 0, total: 0 },
+                isImporting: true,
+                isAnalyzing: true,
+                isGameAnalyzing: true,
+                error: null,
+            }));
+
             try {
-                const game = await importGame({ pgn });
-
-                // Build Move[] for MoveList
-                const moves: Move[] = [];
-                for (let i = 0; i < game.moves.length; i += 2) {
-                    const moveNum = Math.floor(i / 2) + 1;
-                    moves.push({
-                        moveNumber: moveNum,
-                        white: game.moves[i].san,
-                        black: game.moves[i + 1]?.san,
-                    });
-                }
-
-                const opening = await lookupOpening(game.initialFen).catch(() => null);
+                const game = await importGame(
+                    looksLikeFen(trimmed) ? { fen: trimmed } : { pgn: trimmed }
+                );
+                const gameFens = getGameFens(game);
+                const openingPromise = lookupOpening(game.initialFen).catch(() => null);
 
                 setState((s) => ({
                     ...s,
                     parsedGame: game,
-                    moves,
-                    opening,
+                    moves: toMoveList(game),
                     fen: game.initialFen,
                     currentMoveIndex: 0,
                     isImporting: false,
+                    gameAnalysisProgress: { completed: 0, total: gameFens.length },
                 }));
 
-                await analyze(game.initialFen);
+                const analysisEntries = await Promise.all(
+                    gameFens.map(async (fen, index) => {
+                        const result = await analyzePosition({ fen, depth: 20 });
+
+                        setState((s) => (
+                            analysisRunRef.current === runId
+                                ? {
+                                    ...s,
+                                    gameAnalysisProgress: {
+                                        completed: Math.min(s.gameAnalysisProgress.completed + 1, gameFens.length),
+                                        total: gameFens.length,
+                                    },
+                                }
+                                : s
+                        ));
+
+                        return [index, toPositionAnalysis(result)] as const;
+                    })
+                );
+
+                const opening = await openingPromise;
+                const analysisByMoveIndex = Object.fromEntries(analysisEntries) as Record<number, PositionAnalysis>;
+                const moveInsightsByIndex = !looksLikeFen(trimmed) && game.moves.length > 0
+                    ? Object.fromEntries(
+                        (await getPgnInsights({
+                            pgn: trimmed,
+                            moves: game.moves.map((move, index) => {
+                                const moveIndex = index + 1;
+                                const analysis = analysisByMoveIndex[moveIndex];
+
+                                return {
+                                    moveIndex,
+                                    san: move.san,
+                                    fen: move.fen,
+                                    evaluation: analysis?.evaluation,
+                                    mate: analysis?.mate,
+                                    bestMove: analysis?.bestMove,
+                                };
+                            }),
+                        }).catch(() => ({ insights: [] }))).insights.map((insight) => [
+                            insight.moveIndex,
+                            insight.text,
+                        ])
+                    ) as Record<number, string>
+                    : {};
+
+                setState((s) => {
+                    if (analysisRunRef.current !== runId) return s;
+
+                    const currentAnalysis = analysisByMoveIndex[s.currentMoveIndex] ?? analysisByMoveIndex[0];
+                    const currentMoveInsight = moveInsightsByIndex[s.currentMoveIndex] ?? null;
+
+                    return {
+                        ...s,
+                        ...(currentAnalysis ?? {}),
+                        opening,
+                        analysisByMoveIndex,
+                        moveInsightsByIndex,
+                        currentMoveInsight,
+                        isAnalyzing: false,
+                        isGameAnalyzing: false,
+                        gameAnalysisProgress: {
+                            completed: gameFens.length,
+                            total: gameFens.length,
+                        },
+                    };
+                });
             } catch (err) {
+                if (analysisRunRef.current !== runId) return;
+
                 setState((s) => ({
                     ...s,
                     isImporting: false,
+                    isAnalyzing: false,
+                    isGameAnalyzing: false,
                     error: err instanceof Error ? err.message : "Import failed",
                 }));
             }
         },
-        [analyze]
+        []
     );
 
-    // ─── Chat ─────────────────────────────────────────────────────────────────
     const sendMessage = useCallback(
         async (content: string) => {
             const userMsg: ChatMessage = {
@@ -163,6 +290,10 @@ export function useAnalysis() {
                 content,
                 timestamp: new Date(),
             };
+            const history = state.chatMessages.map((m) => ({
+                role: m.role,
+                content: m.content,
+            }));
 
             setState((s) => ({
                 ...s,
@@ -171,14 +302,8 @@ export function useAnalysis() {
             }));
 
             try {
-                const currentFen = state.fen;
-                const history = state.chatMessages.map((m) => ({
-                    role: m.role,
-                    content: m.content,
-                }));
-
                 const { reply } = await sendChatMessage({
-                    fen: currentFen,
+                    fen: state.fen,
                     message: content,
                     history,
                 });
@@ -202,6 +327,7 @@ export function useAnalysis() {
                     content: "Sorry, I couldn't process your request. Please try again.",
                     timestamp: new Date(),
                 };
+
                 setState((s) => ({
                     ...s,
                     chatMessages: [...s.chatMessages, errorMsg],
@@ -210,7 +336,7 @@ export function useAnalysis() {
                 }));
             }
         },
-        [state.fen, state.chatMessages]
+        [state.chatMessages, state.fen]
     );
 
     const clearError = useCallback(() => setState((s) => ({ ...s, error: null })), []);

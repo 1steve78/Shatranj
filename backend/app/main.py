@@ -4,7 +4,9 @@ from contextlib import asynccontextmanager
 from app.api.routes.analyze import router as analyze_router
 from app.api.routes.game import router as game_router
 from app.api.routes.chat import router as chat_router
+from app.api.routes.opening import router as opening_router
 from app.db.session import init_db
+from app.services.engine_service import close_engine
 
 
 @asynccontextmanager
@@ -12,7 +14,7 @@ async def lifespan(app: FastAPI):
     # Startup: create DB tables
     init_db()
     yield
-    # Shutdown: nothing to clean up for now
+    close_engine()
 
 
 app = FastAPI(
@@ -24,8 +26,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
-    allow_credentials=True,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -33,6 +35,7 @@ app.add_middleware(
 app.include_router(analyze_router)
 app.include_router(game_router)
 app.include_router(chat_router)
+app.include_router(opening_router)
 
 
 @app.get("/health")

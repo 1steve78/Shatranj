@@ -1,184 +1,202 @@
-import { useState, useMemo } from "react";
-import { Chess } from "chess.js";
-
-type PieceType = string | null;
-type Board = PieceType[][];
-
-const pieceMap: Record<string, string> = {
-    "pw": "♙", "pb": "♟",
-    "nw": "♘", "nb": "♞",
-    "bw": "♗", "bb": "♝",
-    "rw": "♖", "rb": "♜",
-    "qw": "♕", "qb": "♛",
-    "kw": "♔", "kb": "♚",
-};
+import { useState, CSSProperties } from "react";
+import { Chessboard, type Arrow, type ChessboardOptions } from "react-chessboard";
 
 interface ChessBoardProps {
     fen?: string;
+    bestMoveArrows?: string[][];
     highlightedSquares?: string[];
     lastMove?: { from: string; to: string };
     flipped?: boolean;
+    isLoading?: boolean;
+    loadingLabel?: string;
     onSquareClick?: (square: string) => void;
 }
 
-const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"];
-const RANKS = ["8", "7", "6", "5", "4", "3", "2", "1"];
-
 export default function ChessBoard({
     fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    bestMoveArrows = [],
     highlightedSquares = [],
     lastMove,
     flipped = false,
+    isLoading = false,
+    loadingLabel = "Analyzing position",
     onSquareClick,
 }: ChessBoardProps) {
     const [selected, setSelected] = useState<string | null>(null);
-
-    const board: Board = useMemo(() => {
-        try {
-            const chess = new Chess(fen);
-            return chess.board().map(row => 
-                row.map(sq => sq ? pieceMap[`${sq.type}${sq.color}`] || null : null)
-            );
-        } catch {
-            return Array(8).fill(Array(8).fill(null));
-        }
-    }, [fen]);
-
-    const files = flipped ? [...FILES].reverse() : FILES;
-    const ranks = flipped ? [...RANKS].reverse() : RANKS;
-
-    const squareName = (fileIdx: number, rankIdx: number) =>
-        `${files[fileIdx]}${ranks[rankIdx]}`;
-
-    const isLight = (fileIdx: number, rankIdx: number) =>
-        (fileIdx + rankIdx) % 2 === 0;
-
-    const isLastMove = (sq: string) =>
-        sq === lastMove?.from || sq === lastMove?.to;
-
-    const isHighlighted = (sq: string) => highlightedSquares.includes(sq);
 
     const handleClick = (sq: string) => {
         setSelected(selected === sq ? null : sq);
         onSquareClick?.(sq);
     };
 
+    const squareStyles: Record<string, CSSProperties> = {};
+
+    if (lastMove) {
+        squareStyles[lastMove.from] = { backgroundColor: "rgba(253, 253, 146, 0.8)" };
+        squareStyles[lastMove.to] = { backgroundColor: "rgba(253, 253, 146, 0.8)" };
+    }
+
+    if (selected) {
+        squareStyles[selected] = {
+            backgroundColor: "#fdfd92",
+            boxShadow: "inset 0 0 0 3px #dce556",
+        };
+    }
+
+    highlightedSquares.forEach((sq) => {
+        squareStyles[sq] = {
+            ...squareStyles[sq],
+            background: "rgba(255,200,0,0.4)",
+            borderRadius: "50%",
+        };
+    });
+
+    const arrows: Arrow[] = bestMoveArrows.map((a) => ({
+        startSquare: a[0],
+        endSquare: a[1],
+        color: a[2] ?? "rgba(228, 183, 45, 0.95)",
+    })).filter((arrow) => Boolean(arrow.startSquare && arrow.endSquare));
+
+    const bestMove = arrows[0];
+
+    if (bestMove) {
+        squareStyles[bestMove.startSquare] = {
+            ...squareStyles[bestMove.startSquare],
+            background: "linear-gradient(135deg, rgba(228, 183, 45, 0.32), rgba(245, 230, 200, 0.18))",
+            borderRadius: 0,
+            boxShadow: "inset 0 0 0 4px rgba(228, 183, 45, 0.88)",
+        };
+        squareStyles[bestMove.endSquare] = {
+            ...squareStyles[bestMove.endSquare],
+            background: "radial-gradient(circle, rgba(228, 183, 45, 0.72) 0 24%, rgba(228, 183, 45, 0.26) 25% 100%)",
+            borderRadius: 0,
+            boxShadow: "inset 0 0 0 4px rgba(228, 183, 45, 0.88)",
+        };
+    }
+
+    const options: ChessboardOptions = {
+        position: fen,
+        boardOrientation: flipped ? "black" : "white",
+        arrows,
+        arrowOptions: {
+            color: "rgba(228, 183, 45, 0.95)",
+            secondaryColor: "rgba(245, 230, 200, 0.95)",
+            tertiaryColor: "rgba(180, 126, 67, 0.95)",
+            arrowLengthReducerDenominator: 3.4,
+            sameTargetArrowLengthReducerDenominator: 2.2,
+            arrowWidthDenominator: 7,
+            activeArrowWidthMultiplier: 1.35,
+            opacity: 0.96,
+            activeOpacity: 1,
+            arrowStartOffset: 0.18,
+        },
+        allowDrawingArrows: false,
+        onSquareClick: ({ square }) => handleClick(square),
+        squareStyles,
+        squareRenderer: ({ square, children }) => {
+            const isBestFrom = bestMove?.startSquare === square;
+            const isBestTo = bestMove?.endSquare === square;
+
+            return (
+                <div style={{ position: "relative", width: "100%", height: "100%", display: "grid", placeItems: "center" }}>
+                    {children}
+                    {(isBestFrom || isBestTo) && (
+                        <span
+                            style={{
+                                position: "absolute",
+                                left: isBestFrom ? 5 : "auto",
+                                right: isBestTo ? 5 : "auto",
+                                top: isBestFrom ? 5 : "auto",
+                                bottom: isBestTo ? 5 : "auto",
+                                padding: "2px 5px",
+                                borderRadius: 3,
+                                background: "rgba(13, 11, 8, 0.78)",
+                                color: "#f5e6c8",
+                                fontFamily: "Rajdhani, Arial, sans-serif",
+                                fontSize: 10,
+                                fontWeight: 700,
+                                lineHeight: 1,
+                                letterSpacing: "0.08em",
+                                pointerEvents: "none",
+                                textTransform: "uppercase",
+                            }}
+                        >
+                            {isBestFrom ? "Move" : "Here"}
+                        </span>
+                    )}
+                </div>
+            );
+        },
+    };
+
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
             <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&display=swap');
-        .chess-board-wrap {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          font-family: 'Rajdhani', sans-serif;
-        }
-        .rank-labels {
-          display: flex;
-          flex-direction: column;
-          gap: 0;
-        }
-        .rank-label {
-          height: 64px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: #8b7355;
-          font-size: 12px;
-          font-weight: 600;
-          letter-spacing: 0.05em;
-          width: 16px;
-        }
-        .board-grid {
-          display: grid;
-          grid-template-columns: repeat(8, 64px);
-          grid-template-rows: repeat(8, 64px);
-          border: 2px solid #3a3028;
-          box-shadow: 0 0 0 1px #1a1510, 0 20px 60px rgba(0,0,0,0.8), inset 0 0 40px rgba(0,0,0,0.2);
-        }
-        .square {
-          width: 64px;
-          height: 64px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          position: relative;
-          transition: filter 0.1s;
-        }
-        .square:hover { filter: brightness(1.15); }
-        .square.light { background: #c8a97e; }
-        .square.dark  { background: #6b4c2a; }
-        .square.last-move.light { background: #d4b96a; }
-        .square.last-move.dark  { background: #b8932a; }
-        .square.selected { background: #d4a017 !important; box-shadow: inset 0 0 0 3px #ffd700; }
-        .square.highlighted::after {
-          content: '';
-          position: absolute;
-          width: 24px; height: 24px;
-          background: rgba(255,200,0,0.4);
-          border-radius: 50%;
-          pointer-events: none;
-        }
-        .piece {
-          font-size: 42px;
-          line-height: 1;
-          user-select: none;
-          filter: drop-shadow(0 2px 3px rgba(0,0,0,0.5));
-          transition: transform 0.1s;
-        }
-        .square:hover .piece { transform: scale(1.05); }
-        .file-labels {
-          display: flex;
-          padding-left: 24px;
-        }
-        .file-label {
-          width: 64px;
-          text-align: center;
-          color: #8b7355;
-          font-size: 12px;
-          font-weight: 600;
-          letter-spacing: 0.05em;
-          padding-top: 6px;
-          font-family: 'Rajdhani', sans-serif;
-        }
-      `}</style>
+                .chess-board-wrap {
+                    position: relative;
+                }
 
+                .board-loading-overlay {
+                    position: absolute;
+                    inset: 0;
+                    z-index: 20;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 12px;
+                    background: rgba(13, 11, 8, 0.72);
+                    border: 1px solid rgba(200, 160, 32, 0.24);
+                    backdrop-filter: blur(2px);
+                    pointer-events: auto;
+                }
+
+                .board-loading-piece {
+                    width: 68px;
+                    height: 68px;
+                    display: grid;
+                    place-items: center;
+                    border-radius: 50%;
+                    border: 1px solid rgba(200, 160, 32, 0.45);
+                    background: radial-gradient(circle, rgba(200, 160, 32, 0.22), rgba(18, 16, 13, 0.92));
+                    color: #f5e6c8;
+                    font-size: 42px;
+                    line-height: 1;
+                    animation: board-piece-think 1.3s ease-in-out infinite;
+                    box-shadow: 0 0 28px rgba(200, 160, 32, 0.18);
+                }
+
+                .board-loading-text {
+                    font-family: Rajdhani, Arial, sans-serif;
+                    font-size: 12px;
+                    font-weight: 700;
+                    letter-spacing: 0.14em;
+                    color: #c8a020;
+                    text-transform: uppercase;
+                    text-align: center;
+                }
+
+                @keyframes board-piece-think {
+                    0%, 100% {
+                        opacity: 0.7;
+                        transform: translateY(0) scale(0.96);
+                    }
+                    50% {
+                        opacity: 1;
+                        transform: translateY(-5px) scale(1.02);
+                    }
+                }
+            `}</style>
             <div className="chess-board-wrap">
-                <div className="rank-labels">
-                    {ranks.map((r) => (
-                        <div key={r} className="rank-label">{r}</div>
-                    ))}
+                <div className="board-container">
+                    <Chessboard options={options} />
                 </div>
-                <div style={{ display: "flex", flexDirection: "column" }}>
-                    <div className="board-grid">
-                        {ranks.map((_, rankIdx) =>
-                            files.map((_, fileIdx) => {
-                                const sq = squareName(fileIdx, rankIdx);
-                                const light = isLight(fileIdx, rankIdx);
-                                const piece = board[rankIdx]?.[fileIdx];
-                                const cls = [
-                                    "square",
-                                    light ? "light" : "dark",
-                                    isLastMove(sq) ? "last-move" : "",
-                                    selected === sq ? "selected" : "",
-                                    isHighlighted(sq) ? "highlighted" : "",
-                                ].filter(Boolean).join(" ");
-
-                                return (
-                                    <div key={sq} className={cls} onClick={() => handleClick(sq)}>
-                                        {piece && <span className="piece">{piece}</span>}
-                                    </div>
-                                );
-                            })
-                        )}
+                {isLoading && (
+                    <div className="board-loading-overlay" role="status" aria-live="polite">
+                        <div className="board-loading-piece" aria-hidden="true">{"\u265E"}</div>
+                        <div className="board-loading-text">{loadingLabel}</div>
                     </div>
-                    <div className="file-labels">
-                        {files.map((f) => (
-                            <div key={f} className="file-label">{f}</div>
-                        ))}
-                    </div>
-                </div>
+                )}
             </div>
         </div>
     );

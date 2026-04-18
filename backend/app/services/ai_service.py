@@ -11,7 +11,7 @@ client = OpenAI(
 )
 
 # Default to a powerful instruct model hosted by Nvidia NIM
-NIM_MODEL = "meta/llama3-70b-instruct"
+NIM_MODEL = "meta/llama-3.1-70b-instruct"
 
 def explain_move(move: str, move_type: str, score: float, best_move: str) -> str:
     """

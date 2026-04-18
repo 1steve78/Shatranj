@@ -12,6 +12,7 @@ export interface AnalysisResult {
     bestMove: string;
     lines: PvLine[];
     depth: number;
+    best_move_arrows?: string[][];
 }
 
 export interface PvLine {
@@ -28,6 +29,29 @@ export interface ChatRequest {
 
 export interface ChatResponse {
     reply: string;
+}
+
+export interface MoveInsightInput {
+    moveIndex: number;
+    san: string;
+    fen: string;
+    evaluation?: number;
+    mate?: number | null;
+    bestMove?: string | null;
+}
+
+export interface PgnInsightsRequest {
+    pgn: string;
+    moves: MoveInsightInput[];
+}
+
+export interface MoveInsight {
+    moveIndex: number;
+    text: string;
+}
+
+export interface PgnInsightsResponse {
+    insights: MoveInsight[];
 }
 
 export interface GameImportRequest {
@@ -68,6 +92,13 @@ export async function analyzePosition(req: AnalysisRequest): Promise<AnalysisRes
 
 export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
     return request<ChatResponse>("/chat", {
+        method: "POST",
+        body: JSON.stringify(req),
+    });
+}
+
+export async function getPgnInsights(req: PgnInsightsRequest): Promise<PgnInsightsResponse> {
+    return request<PgnInsightsResponse>("/chat/pgn-insights", {
         method: "POST",
         body: JSON.stringify(req),
     });

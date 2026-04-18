@@ -8,8 +8,10 @@ def parse_pgn(pgn_text: str):
     positions = []
 
     for move in game.mainline_moves():
+        before_fen = board.fen()
         board.push(move)
         positions.append({
+            "before_fen": before_fen,
             "fen": board.fen(),
             "move": move.uci()
         })

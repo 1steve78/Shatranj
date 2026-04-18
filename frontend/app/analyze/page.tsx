@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, Suspense, useState, useRef } from "react";
+import { useEffect, Suspense, useState, useRef, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
 import ChessBoard from "@/components/ChessBoard";
@@ -29,7 +29,7 @@ function AnalyzePage() {
   const [activePanel, setActivePanel] = useState<"moves" | "chat">("moves");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { whiteAccuracy, blackAccuracy } = React.useMemo(() => {
+  const { whiteAccuracy, blackAccuracy } = useMemo(() => {
     if (!parsedGame) return { whiteAccuracy: 0, blackAccuracy: 0 };
     const wAccs: number[] = [];
     const bAccs: number[] = [];

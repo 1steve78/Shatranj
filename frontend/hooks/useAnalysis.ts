@@ -37,7 +37,7 @@ interface AnalysisState {
     error: string | null;
 }
 
-type PositionAnalysis = Pick<AnalysisState, "evaluation" | "mate" | "bestMove" | "bestMoveArrows" | "depth">;
+export type PositionAnalysis = Pick<AnalysisState, "evaluation" | "mate" | "bestMove" | "bestMoveArrows" | "depth">;
 
 function looksLikeFen(input: string) {
     return /^[rnbqkpRNBQKP1-8/]+ [wb](?: |$)/.test(input.trim());

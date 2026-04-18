@@ -79,6 +79,40 @@ Import your PGNs, analyze positions, and use the integrated chat coach!
 
 ---
 
+## 📁 Project Structure
+
+```text
+shatranj/
+├── backend/                # Python FastAPI Backend
+│   ├── app/                # Main application package
+│   │   ├── api/            # API endpoints & WebSocket routes
+│   │   ├── core/           # Configuration & environment variables
+│   │   ├── db/             # Database connection & sessions
+│   │   ├── models/         # SQLAlchemy ORM models
+│   │   ├── schemas/        # Pydantic schemas for data validation
+│   │   ├── services/       # Business logic (Stockfish pool, LLM integration, Redis)
+│   │   └── main.py         # FastAPI application entry point
+│   ├── alembic/            # Database configurations & migration scripts
+│   ├── tests/              # Pytest suite for backend testing
+│   ├── requirements.txt    # Python dependencies
+│   └── Dockerfile          # Docker configuration for the backend
+│
+├── frontend/               # Next.js React Frontend
+│   ├── app/                # Next.js App Router (Pages, Layouts & API Routes)
+│   ├── components/         # Reusable UI components (Chessboard, Analyisis Panel)
+│   ├── hooks/              # Custom React hooks (e.g., useAnalysis, useWebSocket)
+│   ├── lib/                # Utility functions and shared logic
+│   ├── public/             # Static assets (images, icons)
+│   ├── styles/             # Global CSS and Tailwind definitions
+│   └── package.json        # Node.js dependencies and scripts
+│
+├── docker-compose.yml      # Orchestrates external services (PostgreSQL, Redis)
+├── start.bat               # Windows startup script to run all services locally
+└── start.sh                # Linux/Mac startup script to run all services locally
+```
+
+---
+
 ## 🏗️ Architecture V2
 
 - `/games/import`: Converts raw PGN strings into a series of FEN positions, while triggering a silent **Speculative Precalculation** job in a BackgroundTask for blazing-fast initial UX.

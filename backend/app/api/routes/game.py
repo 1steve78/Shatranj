@@ -28,13 +28,10 @@ async def import_game(payload: GameImportRequest, background_tasks: BackgroundTa
         fens_to_precompute = [m["fen"] for m in parsed["moves"][:10]]
         
         async def speculative_eval(fens):
-            for fen in fens:
-                try:
-                    await analyze_position_async(fen, depth=15)
-                except Exception:
-                    pass
+            tasks = [analyze_position_async(fen, depth=15) for fen in fens]
+            await asyncio.gather(*tasks, return_exceptions=True)
                     
-        background_tasks.add_task(speculative_eval, fens_to_precompute)
+        asyncio.create_task(speculative_eval(fens_to_precompute))
         return parsed
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

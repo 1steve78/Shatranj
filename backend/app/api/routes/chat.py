@@ -5,6 +5,7 @@ from typing import List, Optional
 from app.services.ai_service import client, NIM_MODEL
 import json
 import re
+import asyncio
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -73,11 +74,12 @@ def parse_json_object(content: str) -> dict:
 
 
 @router.post("", response_model=ChatResponse)
-def chat(request: ChatRequest):
+async def chat(request: ChatRequest):
     """
     Stateless chat endpoint. The client sends the fen, current message, and conversation history.
     """
-    response = client.chat.completions.create(
+    response = await asyncio.to_thread(
+        client.chat.completions.create,
         model=NIM_MODEL,
         messages=build_messages(request),
         max_tokens=300,
@@ -88,7 +90,7 @@ def chat(request: ChatRequest):
 
 
 @router.post("/pgn-insights", response_model=PgnInsightsResponse)
-def pgn_insights(request: PgnInsightsRequest):
+async def pgn_insights(request: PgnInsightsRequest):
     move_lines = []
     for move in request.moves:
         eval_text = "mate " + str(move.mate) if move.mate is not None else f"{move.evaluation:.2f}" if move.evaluation is not None else "unknown"
@@ -106,13 +108,14 @@ def pgn_insights(request: PgnInsightsRequest):
         "Moves:\n" + "\n".join(move_lines)
     )
 
-    response = client.chat.completions.create(
+    response = await asyncio.to_thread(
+        client.chat.completions.create,
         model=NIM_MODEL,
         messages=[
             {"role": "system", "content": "You return compact chess coaching notes as strict JSON only."},
             {"role": "user", "content": prompt}
         ],
-        max_tokens=min(3500, max(500, len(request.moves) * 32)),
+        max_tokens=min(6000, max(500, len(request.moves) * 64)),
         temperature=0.3
     )
 

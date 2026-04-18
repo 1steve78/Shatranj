@@ -11,14 +11,18 @@ TTL_OPENING = 7 * 24 * 60 * 60  # 7 days
 TTL_MIDDLEGAME = 24 * 60 * 60   # 24 hours
 TTL_ENDGAME = None              # Forever
 
+import threading
+
 # Global connection pool
 redis_client: Optional[redis.Redis] = None
+_redis_lock = threading.Lock()
 
 def get_redis() -> redis.Redis:
     global redis_client
     if redis_client is None:
-        # Connect to the local Redis container running on port 6379, db=0
-        redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        with _redis_lock:
+            if redis_client is None:
+                redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
     return redis_client
 
 def get_zobrist_hash(fen: str) -> int:
@@ -52,7 +56,10 @@ async def get_cached_eval(fen: str) -> Optional[Dict[str, Any]]:
     try:
         data = await client.get(key)
         if data:
-            return json.loads(data)
+            parsed = json.loads(data)
+            # Prevent Zobrist hash collision by strictly verifying the exact FEN
+            if parsed.get("fen_str") == fen:
+                return parsed
     except Exception as e:
         logger.warning(f"Failed to read from Redis cache: {e}")
     return None
@@ -64,16 +71,20 @@ async def set_cached_eval(fen: str, result: Dict[str, Any]) -> None:
     key = f"eval:{z_hash}"
     ttl = determine_ttl(fen)
     
+    # Store FEN to detect collisions on read
+    result_copy = dict(result)
+    result_copy["fen_str"] = fen
+    
     try:
         # Cache poisoning defense (only overwrite if depth is >= cached depth)
         existing_data = await client.get(key)
         if existing_data:
             existing = json.loads(existing_data)
             existing_depth = existing.get("depth", 0)
-            new_depth = result.get("depth", 0)
-            if new_depth < existing_depth:
+            new_depth = result_copy.get("depth", 0)
+            if new_depth < existing_depth and existing.get("fen_str") == fen:
                 return  # Do not overwrite a deeper evaluation with a shallower one
 
-        await client.set(key, json.dumps(result), ex=ttl)
+        await client.set(key, json.dumps(result_copy), ex=ttl)
     except Exception as e:
         logger.warning(f"Failed to write to Redis cache: {e}")

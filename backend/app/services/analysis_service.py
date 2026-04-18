@@ -1,16 +1,15 @@
 import math
 import chess
 
-def calculate_cp_loss(prev_score, new_score, is_white_turn):
+def calculate_cp_loss(prev_score, prev_mate, new_score, new_mate, is_white_turn):
     # Scores are from White's perspective. 
-    # If White played, loss = prev - new (since positive is good for white)
-    # If Black played, loss = new - prev (since negative is good for black)
-    
-    # If mate is involved, handle cleanly
-    if prev_score > 50000 and new_score > 50000:
-        return 0 # Still winning mate
-    if prev_score < -50000 and new_score < -50000:
-        return 0 # Still losing mate
+    if prev_mate is not None or new_mate is not None:
+        # If maintaining a winning mate, no loss
+        if prev_mate is not None and new_mate is not None and ((prev_mate > 0) == (new_mate > 0)):
+            return 0
+        # If mate status changed, penalize heavily as a blunder (unless they blundered mate to us, caught by max 0)
+        diff = prev_score - new_score if is_white_turn else new_score - prev_score
+        return max(0, diff)
         
     diff = prev_score - new_score if is_white_turn else new_score - prev_score
     return max(0, diff) # Never negative CP loss
@@ -44,7 +43,14 @@ def classify_move(cp_loss, prev_score, new_score, is_white_turn, is_best_move=Fa
         return "inaccuracy"
         
     if accuracy >= 30:
+        eval_before_move = prev_score if is_white_turn else -prev_score
+        if eval_before_move >= 300 and cp_loss > 200:
+            return "miss"
         return "mistake"
+        
+    eval_before_move = prev_score if is_white_turn else -prev_score
+    if eval_before_move >= 300 and cp_loss > 200:
+        return "miss"
         
     return "blunder"
 

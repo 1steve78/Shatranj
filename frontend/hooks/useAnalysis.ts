@@ -211,6 +211,14 @@ export function useAnalysis() {
                     const ws = new WebSocket(`${wsUrl}/analyze/stream`);
                     wsRef.current = ws;
                     let completedCount = 0;
+                    
+                    // Bug 20: 5-minute timeout fallback
+                    const timeoutId = setTimeout(() => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.close();
+                        }
+                        reject(new Error("Game analysis timed out after 5 minutes."));
+                    }, 300000);
 
                     ws.onopen = () => {
                         ws.send(JSON.stringify({ fens: gameFens, depth: 15 }));
@@ -241,10 +249,12 @@ export function useAnalysis() {
                                 }
                             }));
                         } else if (data.type === "done") {
+                            clearTimeout(timeoutId);
                             ws.close();
                             wsRef.current = null;
                             resolve();
                         } else if (data.type === "error") {
+                            clearTimeout(timeoutId);
                             ws.close();
                             wsRef.current = null;
                             reject(new Error(data.message));
@@ -252,8 +262,20 @@ export function useAnalysis() {
                     };
 
                     ws.onerror = () => {
+                        clearTimeout(timeoutId);
                         wsRef.current = null;
                         reject(new Error("WebSocket error"));
+                    };
+
+                    // Bug 3: Handle unexpected closures cleanly
+                    ws.onclose = () => {
+                        clearTimeout(timeoutId);
+                        wsRef.current = null;
+                        if (completedCount >= gameFens.length) {
+                            resolve();
+                        } else {
+                            reject(new Error("WebSocket connection closed unexpectedly"));
+                        }
                     };
                 });
 

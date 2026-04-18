@@ -13,8 +13,13 @@ from app.services.engine_service import close_engine
 async def lifespan(app: FastAPI):
     # Startup: create DB tables
     init_db()
+    
+    # Warm up engine pool eagerly
+    from app.services.engine_service import engine_pool
+    await engine_pool.initialize()
+    
     yield
-    close_engine()
+    await close_engine()
 
 
 app = FastAPI(

@@ -35,7 +35,7 @@ def parse_pgn_detailed(pgn_text: str):
         })
         
     return {
-        "initialFen": game.board().fen(),
+        "initialFen": game.headers.get("FEN", chess.STARTING_FEN),
         "headers": dict(game.headers),
         "moves": moves
     }

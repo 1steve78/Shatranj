@@ -27,18 +27,20 @@ class EnginePool:
         self.pool = asyncio.Queue(maxsize=size)
         self.semaphore = asyncio.Semaphore(size)
         self.initialized = False
+        self.lock = asyncio.Lock()
 
     async def initialize(self):
-        if self.initialized:
-            return
-        logger.info(f"Initializing EnginePool with {self.size} instances...")
-        for _ in range(self.size):
-            # Spawn asynchronous UCI protocol instances
-            _, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
-            # Configure 128MB Hash for each Engine instance
-            await engine.configure({"Hash": 128})
-            self.pool.put_nowait(engine)
-        self.initialized = True
+        async with self.lock:
+            if self.initialized:
+                return
+            logger.info(f"Initializing EnginePool with {self.size} instances...")
+            for _ in range(self.size):
+                # Spawn asynchronous UCI protocol instances
+                _, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
+                # Configure 128MB Hash for each Engine instance
+                await engine.configure({"Hash": 128})
+                self.pool.put_nowait(engine)
+            self.initialized = True
 
     async def acquire(self) -> chess.engine.Protocol:
         if not self.initialized:
@@ -89,11 +91,27 @@ async def analyze_position_async(fen: str, depth: int = 18, multipv: int = 2):
     async with engine_pool.semaphore:
         engine = await engine_pool.acquire()
         try:
-            info = await engine.analyse(board, chess.engine.Limit(depth=actual_depth), multipv=multipv)
+            info = await asyncio.wait_for(
+                engine.analyse(board, chess.engine.Limit(depth=actual_depth), multipv=multipv),
+                timeout=25.0
+            )
         except Exception as e:
             logger.error(f"Engine analyze error: {e}")
-            engine_pool.release(engine)
+            try:
+                await engine.quit()
+            except Exception:
+                pass
+            
+            # Spawn substitute engine to prevent starvation
+            try:
+                _, new_engine = await chess.engine.popen_uci(STOCKFISH_PATH)
+                await new_engine.configure({"Hash": 128})
+                engine_pool.release(new_engine)
+            except Exception as clone_e:
+                logger.error(f"Failed to clone engine: {clone_e}")
+                
             raise e
+            
         engine_pool.release(engine)
 
     if not isinstance(info, list):
@@ -137,6 +155,11 @@ async def analyze_position_async(fen: str, depth: int = 18, multipv: int = 2):
     }
 
     # 4. Save to Redis in background task
-    asyncio.create_task(set_cached_eval(fen, result))
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(set_cached_eval(fen, result))
+    except RuntimeError:
+        # If no running loop, just await it directly or ignore (e.g. tests)
+        pass
 
     return result

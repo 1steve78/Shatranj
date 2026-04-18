@@ -13,28 +13,29 @@ client = OpenAI(
 # Default to a powerful instruct model hosted by Nvidia NIM
 NIM_MODEL = "meta/llama-3.1-70b-instruct"
 
-def explain_move(move: str, move_type: str, score: float, best_move: str) -> str:
+def explain_move(move: str, move_type: str, score: float, best_move: str, game_phase: str = "Midgame", previous_moves_context: str = "") -> str:
     """
-    Sends move data to Nvidia NIM and returns a human-readable explanation.
+    Sends move data to Nvidia NIM and returns a human-readable explanation, simulating a 1200-level player comparison.
     """
     prompt = (
-        f"You are a chess coach. A player played the move {move}, "
-        f"which is classified as a '{move_type}'. "
-        f"The engine evaluation after this move is {score:.2f} pawns (from White's perspective). "
-        f"The best move was {best_move}. "
-        f"In 2-3 sentences, explain why this move is a '{move_type}'. "
-        f"Don't just describe the move. Explain the tactical theme (e.g., 'You missed a fork', 'This allows a back-rank mate', or 'You failed to punish their exposed King'). "
-        f"Compare the player's move to the engine move in human terms. "
-        f"Be concise, clear, and instructive."
+        f"You are a master chess coach analyzing a {game_phase} position. "
+        f"The player played {move}, classified as a '{move_type}'. The engine favored {best_move}. "
+        f"The engine evaluation is now {score:.2f} pawns."
+        f"{previous_moves_context} \n"
+        f"Your task:\n"
+        f"1. Explain why {move} is a {move_type} mathematically or tactically using the engine's preferred move.\n"
+        f"2. Simulate a '1200-rated player': What would an average 1200 ELO player think here, and why is that intuition flawed compared to the engine?\n"
+        f"3. Frame the error using advanced internal terminology where appropriate (e.g., 'Tactical Collapse', 'Positional Drift' for sequential inaccuracies, or 'Endgame Precision Loss').\n"
+        f"Be concise, clear, and write it in a punchy, coaching tone."
     )
 
     response = client.chat.completions.create(
         model=NIM_MODEL,
         messages=[
-            {"role": "system", "content": "You are a helpful chess coach assistant."},
+            {"role": "system", "content": "You are a master chess coach sitting next to the player, focused on psychological skill gap visualization."},
             {"role": "user", "content": prompt}
         ],
-        max_tokens=150,
+        max_tokens=200,
         temperature=0.7
     )
 

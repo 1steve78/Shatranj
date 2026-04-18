@@ -122,8 +122,23 @@ async def analyze_game(request: AnalysisRequest, db: Session = Depends(get_db)):
             if res["type"] in critical_types:
                 # Add tactical context to help LLM
                 motif_str = f" Context: Engine identified {', '.join(res['motifs'])}." if res["motifs"] else ""
+                
+                # Provide clustering context (previous 2 moves and their eval types)
+                prev_moves = []
+                for j in range(max(0, idx - 2), idx):
+                    prev_moves.append(f"{results[j]['move']} ({results[j]['type']})")
+                prev_ctx = f" Previous logic leading here: {', '.join(prev_moves)}." if prev_moves else ""
+                
+                full_context = motif_str + prev_ctx
+
                 llm_tasks.append(asyncio.to_thread(
-                    explain_move, res["move"], res["type"], res["score"], (res["best_move"] or "N/A") + motif_str
+                    explain_move, 
+                    res["move"], 
+                    res["type"], 
+                    res["score"], 
+                    (res["best_move"] or "N/A"),
+                    res["phase"],
+                    full_context
                 ))
                 task_indices.append(idx)
 
@@ -150,26 +165,74 @@ async def analyze_game(request: AnalysisRequest, db: Session = Depends(get_db)):
 @router.websocket("/stream")
 async def analyze_stream(websocket: WebSocket):
     await websocket.accept()
-    try:
-        data = await websocket.receive_text()
-        req = json.loads(data)
-        fens = req.get("fens", [])
-        depth = req.get("depth", 15)
-        
-        async def evaluate_and_send(index, fen):
+    
+    queue = asyncio.PriorityQueue()
+    evaluated = set()
+    fens_dict = {}
+    depth = 15
+    workers = []
+
+    async def worker():
+        while True:
             try:
-                result = await analyze_position_async(fen, depth=depth)
-                await websocket.send_json({"type": "eval", "index": index, "result": result})
-            except Exception as e:
+                p_score, index, fen = await queue.get()
+                if index not in evaluated:
+                    try:
+                        result = await analyze_position_async(fen, depth=depth)
+                        evaluated.add(index)
+                        await websocket.send_json({"type": "eval", "index": index, "result": result})
+                        
+                        # Dispatch done message if we reached the whole set
+                        if len(evaluated) == len(fens_dict):
+                            await websocket.send_json({"type": "done"})
+                    except Exception as e:
+                        pass
+                queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception:
                 pass
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            req = json.loads(data)
+            
+            # Initial setup payload
+            if "fens" in req:
+                fens = req.get("fens", [])
+                depth = req.get("depth", 15)
+                fens_dict = {i: f for i, f in enumerate(fens)}
+                evaluated.clear()
                 
-        # Fire off all evaluations concurrently (bounded by our semaphore in engine_service)
-        tasks = [evaluate_and_send(i, fen) for i, fen in enumerate(fens)]
-        await asyncio.gather(*tasks)
-        
-        await websocket.send_json({"type": "done"})
-        
+                # Empty the queue if re-initializing
+                while not queue.empty():
+                    queue.get_nowait()
+                    queue.task_done()
+                
+                # Push all moves into priority queue linearly (10+i so we have room for bumps at 0)
+                for i, fen in enumerate(fens):
+                    await queue.put((10 + i, i, fen))
+                    
+                # Start workers if not started (spin up arbitrary large number, EnginePool Semaphore handles real limits)
+                if not workers:
+                    workers = [asyncio.create_task(worker()) for _ in range(16)]
+                    
+            # Focus update payload (bumping priority)
+            elif req.get("type") == "focus":
+                index = req.get("index")
+                if index is not None and index in fens_dict and index not in evaluated:
+                    # Put it back in the queue with top priority (0)
+                    await queue.put((0, index, fens_dict[index]))
+
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        await websocket.send_json({"type": "error", "message": str(e)})
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        for w in workers:
+            w.cancel()
+

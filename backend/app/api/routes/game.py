@@ -12,13 +12,30 @@ class GameImportRequest(BaseModel):
     pgn: str = ""
     fen: str = ""
 
+from fastapi import BackgroundTasks
+import asyncio
+from app.services.engine_service import analyze_position_async
+
 @router.post("/import", response_model=dict)
-def import_game(payload: GameImportRequest):
-    """Parses a PGN into SAN moves, FENs, and headers."""
+async def import_game(payload: GameImportRequest, background_tasks: BackgroundTasks):
+    """Parses a PGN into SAN moves, FENs, and headers. Speculatively precomputes first 10 moves."""
     if not payload.pgn:
         return {"initialFen": payload.fen, "headers": {}, "moves": []}
     try:
-        return parse_pgn_detailed(payload.pgn)
+        parsed = parse_pgn_detailed(payload.pgn)
+        
+        # Speculative precomputation for first 10 FENs
+        fens_to_precompute = [m["fen"] for m in parsed["moves"][:10]]
+        
+        async def speculative_eval(fens):
+            for fen in fens:
+                try:
+                    await analyze_position_async(fen, depth=15)
+                except Exception:
+                    pass
+                    
+        background_tasks.add_task(speculative_eval, fens_to_precompute)
+        return parsed
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

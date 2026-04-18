@@ -5,121 +5,61 @@ from dotenv import load_dotenv
 import asyncio
 import httpx
 import logging
-import threading
+from typing import Optional, Dict, Any, List
+from .redis_service import get_cached_eval, set_cached_eval
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-def extract_arrow_coordinates(pv_lines):
+STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
+if not STOCKFISH_PATH:
+    raise RuntimeError("STOCKFISH_PATH is not set in environment.")
+
+def extract_arrow_coordinates(pv_lines: List[str]) -> List[List[str]]:
     if not pv_lines: return []
     best_move = pv_lines[0]
     if len(best_move) >= 4:
         return [[best_move[:2], best_move[2:4]]]
     return []
 
-STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
-engine = None
-engine_lock = threading.Lock()
+class EnginePool:
+    def __init__(self, size: int = 4):
+        self.size = size
+        self.pool = asyncio.Queue(maxsize=size)
+        self.semaphore = asyncio.Semaphore(size)
+        self.initialized = False
 
+    async def initialize(self):
+        if self.initialized:
+            return
+        logger.info(f"Initializing EnginePool with {self.size} instances...")
+        for _ in range(self.size):
+            # Spawn asynchronous UCI protocol instances
+            _, engine = await chess.engine.popen_uci(STOCKFISH_PATH)
+            # Configure 128MB Hash for each Engine instance
+            await engine.configure({"Hash": 128})
+            self.pool.put_nowait(engine)
+        self.initialized = True
 
-def get_engine():
-    global engine
+    async def acquire(self) -> chess.engine.Protocol:
+        if not self.initialized:
+            await self.initialize()
+        return await self.pool.get()
 
-    if engine is None:
-        if not STOCKFISH_PATH:
-            raise RuntimeError("STOCKFISH_PATH is not set")
-        engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
-    return engine
+    def release(self, engine: chess.engine.Protocol):
+        self.pool.put_nowait(engine)
 
+    async def close_all(self):
+        while not self.pool.empty():
+            engine = self.pool.get_nowait()
+            await engine.quit()
 
-def close_engine():
-    global engine
+engine_pool = EnginePool(size=4)
 
-    with engine_lock:
-        if engine is not None:
-            engine.quit()
-            engine = None
+async def close_engine():
+    await engine_pool.close_all()
 
-def analyze_position(fen: str, depth: int = 18):
-    board = chess.Board(fen)
-
-    # 🔥 Single call to engine, protected by thread lock for concurrency safety
-    with engine_lock:
-        info = get_engine().analyse(board, chess.engine.Limit(depth=depth), multipv=3)
-
-    if not isinstance(info, list):
-        info = [info]
-
-    pvs = []
-    for pv_info in info:
-        pov_score = pv_info["score"].white()
-        score = pov_score.score()
-        mate = pov_score.mate()
-        
-        best_move = None
-        pv_lines = []
-        if "pv" in pv_info and len(pv_info["pv"]) > 0:
-            best_move = pv_info["pv"][0].uci()
-            pv_lines = [m.uci() for m in pv_info["pv"]]
-            
-        # Clamp mate scores
-        if mate is not None:
-            eval_val = 1000 if mate > 0 else -1000
-        else:
-            eval_val = score if score is not None else 0
-
-        pvs.append({
-            "score": eval_val,
-            "mate": mate,
-            "best_move": best_move,
-            "pv_lines": pv_lines
-        })
-    
-    primary = pvs[0] if pvs else {"score": 0, "mate": None, "best_move": None, "pv_lines": []}
-    
-    return {
-        "score": primary["score"],
-        "evaluation": primary["score"] / 100 if primary["score"] else 0,
-        "mate": primary["mate"],
-        "depth": depth,
-        "best_move": primary["best_move"],
-        "pv_lines": primary["pv_lines"],
-        "pvs": pvs,
-        "best_move_arrows": extract_arrow_coordinates(primary["pv_lines"])
-    }
-
-async def fetch_lichess_cloud_eval(fen: str, multipv: int = 3):
-    url = f"https://lichess.org/api/cloud/eval"
-    params = {"fen": fen, "multiPv": multipv}
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(url, params=params, timeout=2.0)
-            if response.status_code == 200:
-                data = response.json()
-                if "pvs" in data and len(data["pvs"]) > 0:
-                    primary_pv = data["pvs"][0]
-                    score = primary_pv.get("cp", 0)
-                    mate = primary_pv.get("mate")
-                    moves = primary_pv.get("moves", "").split()
-                    best_move = moves[0] if moves else None
-                    
-                    if mate is not None:
-                        score = 100000 if mate > 0 else -100000
-
-                    return {
-                        "score": score,
-                        "evaluation": score / 100 if score else 0,
-                        "mate": mate,
-                        "depth": data.get("depth", 15),
-                        "best_move": best_move,
-                        "pv_lines": moves,
-                        "best_move_arrows": extract_arrow_coordinates(moves),
-                        "source": "lichess"
-                    }
-        except Exception as e:
-            logger.warning(f"Lichess API error: {e}")
-    return None
-
+# Keeping Opening Explorer as it hooks into ECO db (knowledge), not engine evals
 async def fetch_opening_explorer(fen: str):
     url = "https://explorer.lichess.ovh/masters"
     params = {"fen": fen, "moves": 1}
@@ -140,15 +80,81 @@ async def fetch_opening_explorer(fen: str):
             logger.warning(f"Lichess Explorer API error: {e}")
     return {"is_book": False, "name": None, "eco": None}
 
-engine_semaphore = asyncio.Semaphore(4)
+def calculate_adaptive_depth(fen: str) -> int:
+    """Implement lightweight heuristic to determine necessary depth without burning CPU."""
+    board = chess.Board(fen)
+    if board.is_check():
+        return 14 # Captures/Checks need forced line clarity without huge tree
+    # If captures are available, depth 14
+    if any(board.is_capture(move) for move in board.legal_moves):
+        return 14
+    
+    return 12 # Default quiet position depth, saves massive time
 
-async def analyze_position_async(fen: str, depth: int = 18):
-    # Try lichess first
-    cached = await fetch_lichess_cloud_eval(fen, multipv=3)
-    if cached:
+async def analyze_position_async(fen: str, depth: int = 18, multipv: int = 2):
+    # 1. Check Redis Cache First
+    cached = await get_cached_eval(fen)
+    # Ensure cache poisoning protection: Only accept if cached depth >= requested
+    if cached and cached.get("depth", 0) >= depth:
         return cached
 
-    # Fallback to local synchronous engine via threadpool
-    loop = asyncio.get_running_loop()
-    async with engine_semaphore:
-        return await loop.run_in_executor(None, analyze_position, fen, depth)
+    # 2. Fast track heuristics (determines adaptive depth if standard 18 was requested)
+    actual_depth = calculate_adaptive_depth(fen) if depth == 18 else depth
+
+    board = chess.Board(fen)
+    
+    # 3. Engine Pool Acquire via Queue Backpressure
+    async with engine_pool.semaphore:
+        engine = await engine_pool.acquire()
+        try:
+            info = await engine.analyse(board, chess.engine.Limit(depth=actual_depth), multipv=multipv)
+        except Exception as e:
+            logger.error(f"Engine analyze error: {e}")
+            engine_pool.release(engine)
+            raise e
+        engine_pool.release(engine)
+
+    if not isinstance(info, list):
+        info = [info]
+
+    pvs = []
+    for pv_info in info:
+        pov_score = pv_info["score"].white()
+        score = pov_score.score()
+        mate = pov_score.mate()
+        
+        best_move = None
+        pv_lines = []
+        if "pv" in pv_info and len(pv_info["pv"]) > 0:
+            best_move = pv_info["pv"][0].uci()
+            pv_lines = [m.uci() for m in pv_info["pv"]]
+            
+        if mate is not None:
+            eval_val = 1000 if mate > 0 else -1000
+        else:
+            eval_val = score if score is not None else 0
+
+        pvs.append({
+            "score": eval_val,
+            "mate": mate,
+            "best_move": best_move,
+            "pv_lines": pv_lines
+        })
+    
+    primary = pvs[0] if pvs else {"score": 0, "mate": None, "best_move": None, "pv_lines": []}
+    
+    result = {
+        "score": primary["score"],
+        "evaluation": primary["score"] / 100 if primary["score"] else 0,
+        "mate": primary["mate"],
+        "depth": actual_depth, # Reflect actual generated depth
+        "best_move": primary["best_move"],
+        "pv_lines": primary["pv_lines"],
+        "pvs": pvs,
+        "best_move_arrows": extract_arrow_coordinates(primary["pv_lines"])
+    }
+
+    # 4. Save to Redis in background task
+    asyncio.create_task(set_cached_eval(fen, result))
+
+    return result

@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from typing import Optional
 from app.schemas.analysis_schema import AnalysisRequest, AnalysisResponse
 from app.services.pgn_service import parse_pgn
-from app.services.engine_service import analyze_position_async, analyze_position, fetch_opening_explorer
+from app.services.engine_service import analyze_position_async, fetch_opening_explorer
 from app.services.analysis_service import classify_move, calculate_cp_loss, calculate_accuracy, get_game_phase, estimate_elo_performance, extract_tactical_motifs, calculate_move_accuracy
 from app.services.ai_service import explain_move, explain_game_summary
 from app.db.session import get_db
@@ -20,11 +20,11 @@ class PositionRequest(BaseModel):
     depth: Optional[int] = 15
 
 @router.post("", response_model=dict)
-def analyze_single_position(request: PositionRequest):
+async def analyze_single_position(request: PositionRequest):
     """
     Evaluates a single position (FEN) and returns eval, mate, and best move.
     """
-    result = analyze_position(request.fen, depth=request.depth)
+    result = await analyze_position_async(request.fen, depth=request.depth)
     return {
         "evaluation": result["evaluation"],
         "mate": result["mate"],

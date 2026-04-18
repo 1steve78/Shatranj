@@ -13,33 +13,49 @@ client = OpenAI(
 # Default to a powerful instruct model hosted by Nvidia NIM
 NIM_MODEL = "meta/llama-3.1-70b-instruct"
 
-def explain_move(move: str, move_type: str, score: float, best_move: str, game_phase: str = "Midgame", previous_moves_context: str = "") -> str:
+import json
+
+def explain_move(move: str, move_type: str, score: float, best_move: str, game_phase: str = "Midgame", previous_moves_context: str = "") -> dict:
     """
-    Sends move data to Nvidia NIM and returns a human-readable explanation, simulating a 1200-level player comparison.
+    Sends move data to Nvidia NIM and returns a structured JSON evaluation, simulating a 1200-level player comparison.
     """
     prompt = (
         f"You are a master chess coach analyzing a {game_phase} position. "
         f"The player played {move}, classified as a '{move_type}'. The engine favored {best_move}. "
         f"The engine evaluation is now {score:.2f} pawns."
         f"{previous_moves_context} \n"
-        f"Your task:\n"
-        f"1. Explain why {move} is a {move_type} mathematically or tactically using the engine's preferred move.\n"
-        f"2. Simulate a '1200-rated player': What would an average 1200 ELO player think here, and why is that intuition flawed compared to the engine?\n"
-        f"3. Frame the error using advanced internal terminology where appropriate (e.g., 'Tactical Collapse', 'Positional Drift' for sequential inaccuracies, or 'Endgame Precision Loss').\n"
-        f"Be concise, clear, and write it in a punchy, coaching tone."
+        f"Your task is to return a strict JSON object with EXACTLY these four keys:\n"
+        f"  \"tactical_explanation\": (string) Why the move is bad mathematically or tactically compared to {best_move}.\n"
+        f"  \"skill_gap_simulation\": (string) What an average 1200 ELO player was likely thinking here.\n"
+        f"  \"psychological_flaw\": (string) Why that intuition is flawed.\n"
+        f"  \"internal_classification\": (string) Frame the error using advanced terminology (e.g., 'Tactical Collapse', 'Positional Drift', 'Endgame Precision Loss').\n"
+        f"Do not include any markdown formatting or backticks around the output. Output raw valid JSON only."
     )
 
-    response = client.chat.completions.create(
-        model=NIM_MODEL,
-        messages=[
-            {"role": "system", "content": "You are a master chess coach sitting next to the player, focused on psychological skill gap visualization."},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=200,
-        temperature=0.7
-    )
-
-    return response.choices[0].message.content.strip()
+    try:
+        response = client.chat.completions.create(
+            model=NIM_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a master chess coach focused on psychological skill gap visualization. Always respond in valid JSON format."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=300,
+            temperature=0.7,
+            # We enforce JSON if the API supports it, though for compatibility we parse manually
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content.strip()
+        # Clean up any potential markdown ticks if Llama ignores instructions
+        if content.startswith("```json"):
+            content = content.split("```json")[1].rsplit("```", 1)[0].strip()
+        return json.loads(content)
+    except Exception as e:
+        return {
+            "tactical_explanation": "Failed to analyze move.",
+            "skill_gap_simulation": "N/A",
+            "psychological_flaw": "N/A",
+            "internal_classification": "Error"
+        }
 
 
 def explain_game_summary(results: list) -> str:

@@ -12,7 +12,7 @@ class MoveResult(BaseModel):
     score: float
     best_move: Optional[str]
     type: str                       # blunder / mistake / inaccuracy / good
-    explanation: Optional[str]      # Only present when explain=True
+    explanation: Optional[dict]     # Structured LLM Output for Coaching/Skill-Gaps
     cp_loss: float = 0.0
     pv_lines: list[str] = Field(default_factory=list)
     motifs: list[str] = Field(default_factory=list)

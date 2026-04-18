@@ -1,6 +1,6 @@
-# ♟️ Shatranj (Chess Brain Factory)
+# ♟️ Shatranj V2 "Stockfish on Espresso" (Chess Brain Factory)
 
-Shatranj is a modern, high-performance web application designed for playing and analyzing chess. It bridges a sleek React-based UI with a powerful Python backend that handles complete game state parsing, evaluation utilizing the **Stockfish Engine**, and an interactive natural-language chess coach powered by **Nvidia NIM**.
+Shatranj is a modern, high-performance web application designed for playing and analyzing chess. It bridges a sleek React-based UI with a powerful, brutally fast Python backend. The V2 upgrade implements an adaptive **4-engine Stockfish Swarm**, **Redis Zobrist caching**, and a **1200-ELO LLM Skill Gap Coach** powered by Nvidia NIM.
 
 ## 🚀 Tech Stack
 
@@ -8,14 +8,14 @@ Shatranj is a modern, high-performance web application designed for playing and 
 * **Framework:** Next.js (React 19)
 * **Styling:** Tailwind CSS V4
 * **Chess Logic:** `chess.js`
-* **Network:** Axios
+* **Network:** Axios + Real-time WebSockets
 
 ### Backend
 * **API:** FastAPI + Uvicorn
-* **Database:** SQLite (SQLAlchemy ORM + Alembic)
+* **Database & Cache:** Postgres & Redis (via Docker Compose) / SQLite fallback
 * **Chess Parsing:** `python-chess`
-* **Engine Hookup:** Stockfish
-* **AI Integration:** Nvidia NIM (using OpenAI Python SDK)
+* **Engine Hookup:** Asynchronous Stockfish (Engine Pool)
+* **AI Integration:** Nvidia NIM (`meta/llama-3.1-70b-instruct`)
 
 ---
 
@@ -26,15 +26,25 @@ Follow these steps to set up the development environment successfully on your lo
 ### 1. Requirements
 - Node.js (v18+)
 - Python (3.10+)
+- Docker & Docker Compose (Critical for Redis & DB)
 - [Stockfish Executable](https://stockfishchess.org/download/)
 - Nvidia NIM API Key (Available in the Nvidia Developer portal)
 
-### 2. Backend Setup
+### 2. Infrastructure Setup
+You must launch Redis before starting the backend so the caching layer works properly!
+
+```bash
+docker-compose up -d
+```
+*(This starts both PostgreSQL and Redis cache instances in the background)*
+
+### 3. Backend Setup
 Open a terminal and set up the Python environment:
 
 ```bash
 cd backend
 python -m venv venv
+# On OSX/Linux use `source venv/bin/activate`
 # On Windows use `venv\Scripts\activate`
 
 # Install dependencies
@@ -52,9 +62,9 @@ Inside `.env`, make sure to add your **Nvidia NIM API Key** and the absolute pat
 ```bash
 uvicorn app.main:app --reload --port 8000
 ```
-*Note: SQLite tables are automatically generated when the server starts up.*
+*(The backend will hook up to Redis and instantly spin up the 4-Engine Stockfish Pool)*
 
-### 3. Frontend Setup
+### 4. Frontend Setup
 In a second terminal, configure and launch the Next.js application:
 
 ```bash
@@ -63,14 +73,14 @@ npm install
 npm run dev
 ```
 
-### 4. Play!
+### 5. Play!
 Visit `http://localhost:3000` in your browser. 
 Import your PGNs, analyze positions, and use the integrated chat coach!
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Architecture V2
 
-- `/games/import`: Converts raw PGN strings into a series of FEN positions. 
-- `/analyze`: Runs multi-depth Stockfish computation on the current position to serve evaluation scopes and best moves.
-- `/chat`: Connects your position context to `meta/llama3-70b-instruct` specifically prompted as a grandmaster chess coach, bringing you actionable insights!
+- `/games/import`: Converts raw PGN strings into a series of FEN positions, while triggering a silent **Speculative Precalculation** job in a BackgroundTask for blazing-fast initial UX.
+- `/analyze/stream`: An advanced priority-driven WebSocket. It connects to the **Zobrist Redis cache** first. If missed, it routes the evaluation to an asynchronous pool of 4 Stockfish instances, governed by adaptive depth heuristics (`12` vs `14` vs `18` depending on tactical spikes).
+- `/analyze/game`: Groups evaluations chronologically to detect sequences (like "Positional Drift") and passes them to Llama 3.1 70b. The Coach simulates a 1200-ELO player's intuition to pinpoint your psychological skill gap.

@@ -86,6 +86,7 @@ function getGameFens(game: ParsedGame) {
 
 export function useAnalysis() {
     const analysisRunRef = useRef(0);
+    const wsRef = useRef<WebSocket | null>(null);
 
     const [state, setState] = useState<AnalysisState>({
         fen: STARTING_FEN,
@@ -150,6 +151,9 @@ export function useAnalysis() {
 
             if (!cachedAnalysis && !state.isGameAnalyzing) {
                 void analyze(nextFen);
+            } else if (!cachedAnalysis && state.isGameAnalyzing && wsRef.current?.readyState === WebSocket.OPEN) {
+                // Focus bump for priority queue
+                wsRef.current.send(JSON.stringify({ type: "focus", index: next }));
             }
         },
         [analyze, state.analysisByMoveIndex, state.isGameAnalyzing, state.moveInsightsByIndex, state.parsedGame]
@@ -205,6 +209,7 @@ export function useAnalysis() {
                 
                 await new Promise<void>((resolve, reject) => {
                     const ws = new WebSocket(`${wsUrl}/analyze/stream`);
+                    wsRef.current = ws;
                     let completedCount = 0;
 
                     ws.onopen = () => {
@@ -214,6 +219,7 @@ export function useAnalysis() {
                     ws.onmessage = (event) => {
                         if (analysisRunRef.current !== runId) {
                             ws.close();
+                            wsRef.current = null;
                             return;
                         }
 
@@ -236,14 +242,17 @@ export function useAnalysis() {
                             }));
                         } else if (data.type === "done") {
                             ws.close();
+                            wsRef.current = null;
                             resolve();
                         } else if (data.type === "error") {
                             ws.close();
+                            wsRef.current = null;
                             reject(new Error(data.message));
                         }
                     };
 
                     ws.onerror = () => {
+                        wsRef.current = null;
                         reject(new Error("WebSocket error"));
                     };
                 });

@@ -7,11 +7,11 @@ docker compose up -d
 
 REM Start Backend in a new window
 echo Starting Backend Server (FastAPI)...
-start "Shatranj Backend" cmd /k "cd backend && (if exist venv\Scripts\activate.bat call venv\Scripts\activate.bat) && uvicorn app.main:app --reload --port 8000"
+start "Shatranj Backend" cmd /k "cd backend && (if not exist venv python -m venv venv) && (call venv\Scripts\activate.bat) && python -m pip install -r requirements.txt && uvicorn app.main:app --reload --port 8000"
 
 REM Start Frontend in a new window
 echo Starting Frontend Server (Next.js)...
-start "Shatranj Frontend" cmd /k "cd frontend && npm run dev"
+start "Shatranj Frontend" cmd /k "cd frontend && npm install && npm run dev"
 
 echo Servers are launching in new windows!
 pause

@@ -5,14 +5,27 @@ echo "♟️ Starting Shatranj..."
 echo "Starting Docker containers (Postgres & Redis)..."
 docker compose up -d
 
-# Start backend in background
-echo "Starting Backend Server (FastAPI)..."
-(cd backend && source venv/Scripts/activate 2>/dev/null || true && uvicorn app.main:app --reload --port 8000) &
+# Check Python environment and install dependencies before starting the backend
+echo "Starting Backend Server (FastAPI) and installing dependencies..."
+(
+    cd backend
+    if [ ! -d "venv" ]; then
+        python -m venv venv
+    fi
+    # Support both Windows git-bash and Unix
+    source venv/Scripts/activate 2>/dev/null || source venv/bin/activate 2>/dev/null
+    python -m pip install -r requirements.txt
+    uvicorn app.main:app --reload --port 8000
+) &
 BACKEND_PID=$!
 
-# Start frontend in background
-echo "Starting Frontend Server (Next.js)..."
-(cd frontend && npm run dev) &
+# Install npm dependencies and start frontend
+echo "Starting Frontend Server (Next.js) and installing dependencies..."
+(
+    cd frontend
+    npm install
+    npm run dev
+) &
 FRONTEND_PID=$!
 
 # Wait for Ctrl+C to kill both processes

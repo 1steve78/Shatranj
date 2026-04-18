@@ -15,7 +15,7 @@ echo "Starting Backend Server (FastAPI) and installing dependencies..."
     # Support both Windows git-bash and Unix
     source venv/Scripts/activate 2>/dev/null || source venv/bin/activate 2>/dev/null
     python -m pip install -r requirements.txt
-    uvicorn app.main:app --reload --port 8000
+    python run.py
 ) &
 BACKEND_PID=$!
 

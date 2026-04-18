@@ -3,7 +3,6 @@ import chess
 import chess.engine
 from dotenv import load_dotenv
 import asyncio
-import httpx
 import logging
 from typing import Optional, Dict, Any, List
 from .redis_service import get_cached_eval, set_cached_eval
@@ -59,25 +58,8 @@ engine_pool = EnginePool(size=4)
 async def close_engine():
     await engine_pool.close_all()
 
-# Keeping Opening Explorer as it hooks into ECO db (knowledge), not engine evals
 async def fetch_opening_explorer(fen: str):
-    url = "https://explorer.lichess.ovh/masters"
-    params = {"fen": fen, "moves": 1}
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(url, params=params, timeout=2.0)
-            if response.status_code == 200:
-                data = response.json()
-                total_games = data.get("white", 0) + data.get("draws", 0) + data.get("black", 0)
-                if total_games > 5:
-                    opening = data.get("opening", {})
-                    return {
-                        "is_book": True,
-                        "name": opening.get("name", "Book Opening") if opening else "Book Opening",
-                        "eco": opening.get("eco", "") if opening else ""
-                    }
-        except Exception as e:
-            logger.warning(f"Lichess Explorer API error: {e}")
+    # Mocking out the Lichess API hit as requested because it fails the project
     return {"is_book": False, "name": None, "eco": None}
 
 def calculate_adaptive_depth(fen: str) -> int:

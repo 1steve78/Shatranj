@@ -1,6 +1,6 @@
 # ♟️ Shatranj V2 "Stockfish on Espresso" (Chess Brain Factory)
 
-Shatranj is a modern, high-performance web application designed for playing and analyzing chess. It bridges a sleek React-based UI with a powerful, brutally fast Python backend. The V2 upgrade implements an adaptive **4-engine Stockfish Swarm**, **Redis Zobrist caching**, and a **1200-ELO LLM Skill Gap Coach** powered by Nvidia NIM.
+Shatranj is a modern, high-performance web application designed for playing and analyzing chess. It bridges a sleek React-based UI with a powerful, brutally fast Python backend. The V2 upgrade implements an optimized **Stockfish Engine Pool**, **Redis caching**, and blazing-fast **WebSocket streaming** for real-time game analysis.
 
 ## 🚀 Tech Stack
 
@@ -8,14 +8,13 @@ Shatranj is a modern, high-performance web application designed for playing and 
 * **Framework:** Next.js (React 19)
 * **Styling:** Tailwind CSS V4
 * **Chess Logic:** `chess.js`
-* **Network:** Axios + Real-time WebSockets
+* **Network:** Real-time WebSockets
 
 ### Backend
 * **API:** FastAPI + Uvicorn
 * **Database & Cache:** Postgres & Redis (via Docker Compose) / SQLite fallback
 * **Chess Parsing:** `python-chess`
 * **Engine Hookup:** Asynchronous Stockfish (Engine Pool)
-* **AI Integration:** Nvidia NIM (`meta/llama-3.1-70b-instruct`)
 
 ---
 
@@ -115,6 +114,12 @@ shatranj/
 
 ## 🏗️ Architecture V2
 
-- `/games/import`: Converts raw PGN strings into a series of FEN positions, while triggering a silent **Speculative Precalculation** job in a BackgroundTask for blazing-fast initial UX.
-- `/analyze/stream`: An advanced priority-driven WebSocket. It connects to the **Zobrist Redis cache** first. If missed, it routes the evaluation to an asynchronous pool of 4 Stockfish instances, governed by adaptive depth heuristics (`12` vs `14` vs `18` depending on tactical spikes).
-- `/analyze/game`: Groups evaluations chronologically to detect sequences (like "Positional Drift") and passes them to Llama 3.1 70b. The Coach simulates a 1200-ELO player's intuition to pinpoint your psychological skill gap.
+The analysis pipeline was completely rebuilt in V2 to focus on speed, stability, and simplicity. It operates in two clean steps:
+
+1. **Import (`POST /games/import`)**: 
+   The frontend sends a PGN string. The backend uses `python-chess` to play through the game, extracting the exact FEN position for every move and reading PGN headers (to correctly handle custom `initialFen`s). No heavy processing happens here.
+2. **Analysis (`WS /analyze/stream`)**: 
+   The frontend opens a WebSocket and sends the entire array of FENs. The backend distributes these FENs across an asynchronous, 4-worker Stockfish pool via a fast FIFO queue. 
+   - **Caching:** Every position is hashed using a Zobrist hash and checked against the Redis cache.
+   - **Streaming:** As soon as an engine finishes evaluating a position (or a cache hit occurs), the result (Evaluation, Mate, Best Move, PV Lines, Depth) is immediately streamed back to the frontend.
+   - **UI:** The Next.js frontend catches these packets and updates the evaluation bar and move list incrementally without blocking the UI thread.

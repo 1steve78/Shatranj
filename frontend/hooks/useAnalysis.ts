@@ -1,126 +1,128 @@
 import { useState, useCallback, useRef } from "react";
-import {
-    analyzePosition,
-    sendChatMessage,
-    getPgnInsights,
-    importGame,
-    lookupOpening,
-    type AnalysisResult,
-    type ParsedGame,
-    type OpeningInfo,
-} from "@/lib/api";
-import type { ChatMessage } from "@/components/ChatBox";
+import { importGame, analyzePosition, type ParsedGame, type AnalysisResult } from "@/lib/api";
 import type { Move } from "@/components/MoveList";
 
-const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface AnalysisState {
-    fen: string;
+export interface PositionAnalysis {
     evaluation: number;
     mate: number | null;
     bestMove: string | null;
     bestMoveArrows: string[][];
     depth: number;
+    pvLines: string[];
+}
+
+interface AnalysisState {
+    fen: string;
     moves: Move[];
     currentMoveIndex: number;
     parsedGame: ParsedGame | null;
-    opening: OpeningInfo | null;
+
+    // Current-position analysis (mirrors analysisByMoveIndex[currentMoveIndex])
+    evaluation: number;
+    mate: number | null;
+    bestMove: string | null;
+    bestMoveArrows: string[][];
+    depth: number;
+
+    // Per-move cache
     analysisByMoveIndex: Record<number, PositionAnalysis>;
-    moveInsightsByIndex: Record<number, string>;
-    currentMoveInsight: string | null;
+
+    // Progress
     gameAnalysisProgress: { completed: number; total: number };
-    chatMessages: ChatMessage[];
-    isChatLoading: boolean;
+
+    // Flags
+    isImporting: boolean;
     isAnalyzing: boolean;
     isGameAnalyzing: boolean;
-    isImporting: boolean;
+
     error: string | null;
 }
 
-export type PositionAnalysis = Pick<AnalysisState, "evaluation" | "mate" | "bestMove" | "bestMoveArrows" | "depth">;
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const DEFAULT_DEPTH = 18;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function looksLikeFen(input: string) {
     return /^[rnbqkpRNBQKP1-8/]+ [wb](?: |$)/.test(input.trim());
 }
 
-function getFenAtMove(game: ParsedGame, halfMoveIndex: number) {
-    return halfMoveIndex === 0
-        ? game.initialFen
-        : game.moves[halfMoveIndex - 1]?.fen ?? game.initialFen;
+function getFenAtIndex(game: ParsedGame, index: number): string {
+    return index === 0 ? game.initialFen : (game.moves[index - 1]?.fen ?? game.initialFen);
+}
+
+function getGameFens(game: ParsedGame): string[] {
+    return [game.initialFen, ...game.moves.map((m) => m.fen)];
 }
 
 function toMoveList(game: ParsedGame): Move[] {
-    const moves: Move[] = [];
-
+    const result: Move[] = [];
     for (let i = 0; i < game.moves.length; i += 2) {
-        moves.push({
+        result.push({
             moveNumber: Math.floor(i / 2) + 1,
             white: game.moves[i].san,
             black: game.moves[i + 1]?.san,
         });
     }
-
-    return moves;
+    return result;
 }
 
-function toArrowList(result: AnalysisResult) {
-    return (result.best_move_arrows ?? []).filter(
-        (arrow): arrow is string[] =>
-            Array.isArray(arrow) && arrow.length >= 2 && arrow.every((sq) => typeof sq === "string")
-    );
-}
-
-function toPositionAnalysis(result: AnalysisResult): PositionAnalysis {
+function toPositionAnalysis(raw: AnalysisResult): PositionAnalysis {
     return {
-        evaluation: result.evaluation,
-        mate: result.mate,
-        bestMove: result.bestMove,
-        bestMoveArrows: toArrowList(result),
-        depth: result.depth,
+        evaluation:     raw.evaluation,
+        mate:           raw.mate,
+        bestMove:       raw.bestMove || null,
+        bestMoveArrows: (raw.best_move_arrows ?? []).filter(
+            (a): a is string[] => Array.isArray(a) && a.length >= 2
+        ),
+        depth:   raw.depth,
+        pvLines: raw.lines?.map((l) => l.moves).flat() ?? [],
     };
 }
 
-function getGameFens(game: ParsedGame) {
-    return [game.initialFen, ...game.moves.map((move) => move.fen)];
-}
+// ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useAnalysis() {
-    const analysisRunRef = useRef(0);
-    const wsRef = useRef<WebSocket | null>(null);
+    const runIdRef = useRef(0);
+    const wsRef    = useRef<WebSocket | null>(null);
 
     const [state, setState] = useState<AnalysisState>({
-        fen: STARTING_FEN,
-        evaluation: 0,
-        mate: null,
-        bestMove: null,
-        bestMoveArrows: [],
-        depth: 0,
-        moves: [],
-        currentMoveIndex: 0,
-        parsedGame: null,
-        opening: null,
-        analysisByMoveIndex: {},
-        moveInsightsByIndex: {},
-        currentMoveInsight: null,
+        fen:                  STARTING_FEN,
+        moves:                [],
+        currentMoveIndex:     0,
+        parsedGame:           null,
+        evaluation:           0,
+        mate:                 null,
+        bestMove:             null,
+        bestMoveArrows:       [],
+        depth:                0,
+        analysisByMoveIndex:  {},
         gameAnalysisProgress: { completed: 0, total: 0 },
-        chatMessages: [],
-        isChatLoading: false,
-        isAnalyzing: false,
-        isGameAnalyzing: false,
-        isImporting: false,
-        error: null,
+        isImporting:          false,
+        isAnalyzing:          false,
+        isGameAnalyzing:      false,
+        error:                null,
     });
 
-    const analyze = useCallback(async (fen: string, depth = 20) => {
-        setState((s) => ({ ...s, isAnalyzing: true, error: null }));
+    // ── Single-position analysis (used when no game is loaded) ───────────────
 
+    const analyze = useCallback(async (fen: string, depth = DEFAULT_DEPTH) => {
+        setState((s) => ({ ...s, isAnalyzing: true, error: null }));
         try {
-            const result = await analyzePosition({ fen, depth });
-            const analysis = toPositionAnalysis(result);
+            const raw      = await analyzePosition({ fen, depth });
+            const analysis = toPositionAnalysis(raw);
             setState((s) => ({
                 ...s,
-                ...analysis,
-                isAnalyzing: false,
+                evaluation:     analysis.evaluation,
+                mate:           analysis.mate,
+                bestMove:       analysis.bestMove,
+                bestMoveArrows: analysis.bestMoveArrows,
+                depth:          analysis.depth,
+                isAnalyzing:    false,
             }));
         } catch (err) {
             setState((s) => ({
@@ -131,274 +133,213 @@ export function useAnalysis() {
         }
     }, []);
 
+    // ── Move navigation ───────────────────────────────────────────────────────
+
     const goToMove = useCallback(
         (halfMoveIndex: number) => {
-            const game = state.parsedGame;
-            if (!game) return;
+            setState((s) => {
+                const game = s.parsedGame;
+                if (!game) return s;
 
-            const next = Math.max(0, Math.min(halfMoveIndex, game.moves.length));
-            const nextFen = getFenAtMove(game, next);
-            const cachedAnalysis = state.analysisByMoveIndex[next];
-            const currentMoveInsight = state.moveInsightsByIndex[next] ?? null;
+                const next     = Math.max(0, Math.min(halfMoveIndex, game.moves.length));
+                const nextFen  = getFenAtIndex(game, next);
+                const cached   = s.analysisByMoveIndex[next];
 
-            setState((s) => ({
-                ...s,
-                ...(cachedAnalysis ?? {}),
-                currentMoveInsight,
-                currentMoveIndex: next,
-                fen: nextFen,
-            }));
-
-            if (!cachedAnalysis && !state.isGameAnalyzing) {
-                void analyze(nextFen);
-            } else if (!cachedAnalysis && state.isGameAnalyzing && wsRef.current?.readyState === WebSocket.OPEN) {
-                // Focus bump for priority queue
-                wsRef.current.send(JSON.stringify({ type: "focus", index: next }));
-            }
-        },
-        [analyze, state.analysisByMoveIndex, state.isGameAnalyzing, state.moveInsightsByIndex, state.parsedGame]
-    );
-
-    const goBack = useCallback(() => {
-        if (!state.parsedGame) return;
-        goToMove(state.currentMoveIndex - 1);
-    }, [goToMove, state.currentMoveIndex, state.parsedGame]);
-
-    const goForward = useCallback(() => {
-        if (!state.parsedGame) return;
-        goToMove(state.currentMoveIndex + 1);
-    }, [goToMove, state.currentMoveIndex, state.parsedGame]);
-
-    const importPgn = useCallback(
-        async (input: string) => {
-            const trimmed = input.trim();
-            const runId = analysisRunRef.current + 1;
-            analysisRunRef.current = runId;
-
-            setState((s) => ({
-                ...s,
-                analysisByMoveIndex: {},
-                moveInsightsByIndex: {},
-                currentMoveInsight: null,
-                gameAnalysisProgress: { completed: 0, total: 0 },
-                isImporting: true,
-                isAnalyzing: true,
-                isGameAnalyzing: true,
-                error: null,
-            }));
-
-            try {
-                const game = await importGame(
-                    looksLikeFen(trimmed) ? { fen: trimmed } : { pgn: trimmed }
-                );
-                const gameFens = getGameFens(game);
-                const openingPromise = lookupOpening(game.initialFen).catch(() => null);
-
-                setState((s) => ({
+                return {
                     ...s,
-                    parsedGame: game,
-                    moves: toMoveList(game),
-                    fen: game.initialFen,
-                    currentMoveIndex: 0,
-                    isImporting: false,
-                    gameAnalysisProgress: { completed: 0, total: gameFens.length },
-                }));
-
-                const analysisEntries: [number, PositionAnalysis][] = [];
-                const wsUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/^http/, "ws");
-                
-                await new Promise<void>((resolve, reject) => {
-                    const ws = new WebSocket(`${wsUrl}/analyze/stream`);
-                    wsRef.current = ws;
-                    let completedCount = 0;
-                    
-                    // Bug 20: 5-minute timeout fallback
-                    const timeoutId = setTimeout(() => {
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.close();
-                        }
-                        reject(new Error("Game analysis timed out after 5 minutes."));
-                    }, 300000);
-
-                    ws.onopen = () => {
-                        ws.send(JSON.stringify({ fens: gameFens, depth: 15 }));
-                    };
-
-                    ws.onmessage = (event) => {
-                        if (analysisRunRef.current !== runId) {
-                            ws.close();
-                            wsRef.current = null;
-                            return;
-                        }
-
-                        const data = JSON.parse(event.data);
-                        if (data.type === "eval") {
-                            const result = toPositionAnalysis(data.result);
-                            analysisEntries.push([data.index, result]);
-                            completedCount++;
-                            
-                            setState((s) => ({
-                                ...s,
-                                analysisByMoveIndex: {
-                                    ...s.analysisByMoveIndex,
-                                    [data.index]: result
-                                },
-                                gameAnalysisProgress: {
-                                    completed: completedCount,
-                                    total: gameFens.length,
-                                }
-                            }));
-                        } else if (data.type === "done") {
-                            clearTimeout(timeoutId);
-                            ws.close();
-                            wsRef.current = null;
-                            resolve();
-                        } else if (data.type === "error") {
-                            clearTimeout(timeoutId);
-                            ws.close();
-                            wsRef.current = null;
-                            reject(new Error(data.message));
-                        }
-                    };
-
-                    ws.onerror = () => {
-                        clearTimeout(timeoutId);
-                        wsRef.current = null;
-                        reject(new Error("WebSocket error"));
-                    };
-
-                    // Bug 3: Handle unexpected closures cleanly
-                    ws.onclose = () => {
-                        clearTimeout(timeoutId);
-                        wsRef.current = null;
-                        if (completedCount >= gameFens.length) {
-                            resolve();
-                        } else {
-                            reject(new Error("WebSocket connection closed unexpectedly"));
-                        }
-                    };
-                });
-
-                const opening = await openingPromise;
-                const analysisByMoveIndex = Object.fromEntries(analysisEntries) as Record<number, PositionAnalysis>;
-                const moveInsightsByIndex = !looksLikeFen(trimmed) && game.moves.length > 0
-                    ? Object.fromEntries(
-                        (await getPgnInsights({
-                            pgn: trimmed,
-                            moves: game.moves.map((move, index) => {
-                                const moveIndex = index + 1;
-                                const analysis = analysisByMoveIndex[moveIndex];
-
-                                return {
-                                    moveIndex,
-                                    san: move.san,
-                                    fen: move.fen,
-                                    evaluation: analysis?.evaluation,
-                                    mate: analysis?.mate,
-                                    bestMove: analysis?.bestMove,
-                                };
-                            }),
-                        }).catch(() => ({ insights: [] }))).insights.map((insight) => [
-                            insight.moveIndex,
-                            insight.text,
-                        ])
-                    ) as Record<number, string>
-                    : {};
-
-                setState((s) => {
-                    if (analysisRunRef.current !== runId) return s;
-
-                    const currentAnalysis = analysisByMoveIndex[s.currentMoveIndex] ?? analysisByMoveIndex[0];
-                    const currentMoveInsight = moveInsightsByIndex[s.currentMoveIndex] ?? null;
-
-                    return {
-                        ...s,
-                        ...(currentAnalysis ?? {}),
-                        opening,
-                        analysisByMoveIndex,
-                        moveInsightsByIndex,
-                        currentMoveInsight,
-                        isAnalyzing: false,
-                        isGameAnalyzing: false,
-                        gameAnalysisProgress: {
-                            completed: gameFens.length,
-                            total: gameFens.length,
-                        },
-                    };
-                });
-            } catch (err) {
-                if (analysisRunRef.current !== runId) return;
-
-                setState((s) => ({
-                    ...s,
-                    isImporting: false,
-                    isAnalyzing: false,
-                    isGameAnalyzing: false,
-                    error: err instanceof Error ? err.message : "Import failed",
-                }));
-            }
+                    currentMoveIndex: next,
+                    fen:              nextFen,
+                    // Show cached analysis immediately if available
+                    ...(cached
+                        ? {
+                            evaluation:     cached.evaluation,
+                            mate:           cached.mate,
+                            bestMove:       cached.bestMove,
+                            bestMoveArrows: cached.bestMoveArrows,
+                            depth:          cached.depth,
+                          }
+                        : {}),
+                };
+            });
         },
         []
     );
 
-    const sendMessage = useCallback(
-        async (content: string) => {
-            const userMsg: ChatMessage = {
-                id: `u-${Date.now()}`,
-                role: "user",
-                content,
-                timestamp: new Date(),
-            };
-            const history = state.chatMessages.map((m) => ({
-                role: m.role,
-                content: m.content,
-            }));
+    const goBack    = useCallback(() => setState((s) => {
+        const game = s.parsedGame; if (!game) return s;
+        const next = Math.max(0, s.currentMoveIndex - 1);
+        return { ...s, currentMoveIndex: next, fen: getFenAtIndex(game, next),
+                 ...(s.analysisByMoveIndex[next] ?? {}) };
+    }), []);
+
+    const goForward = useCallback(() => setState((s) => {
+        const game = s.parsedGame; if (!game) return s;
+        const next = Math.min(game.moves.length, s.currentMoveIndex + 1);
+        return { ...s, currentMoveIndex: next, fen: getFenAtIndex(game, next),
+                 ...(s.analysisByMoveIndex[next] ?? {}) };
+    }), []);
+
+    // ── PGN / FEN import → WebSocket stream ──────────────────────────────────
+
+    const importPgn = useCallback(async (input: string) => {
+        const trimmed = input.trim();
+        const runId   = ++runIdRef.current;
+
+        // Cancel any ongoing stream
+        wsRef.current?.close();
+        wsRef.current = null;
+
+        setState((s) => ({
+            ...s,
+            analysisByMoveIndex:  {},
+            gameAnalysisProgress: { completed: 0, total: 0 },
+            isImporting:          true,
+            isAnalyzing:          true,
+            isGameAnalyzing:      true,
+            error:                null,
+        }));
+
+        try {
+            // 1. Parse PGN / FEN via backend
+            const game = await importGame(
+                looksLikeFen(trimmed) ? { fen: trimmed } : { pgn: trimmed }
+            );
+
+            if (runIdRef.current !== runId) return; // Superseded
+
+            const gameFens = getGameFens(game);
 
             setState((s) => ({
                 ...s,
-                chatMessages: [...s.chatMessages, userMsg],
-                isChatLoading: true,
+                parsedGame:           game,
+                moves:                toMoveList(game),
+                fen:                  game.initialFen,
+                currentMoveIndex:     0,
+                isImporting:          false,
+                gameAnalysisProgress: { completed: 0, total: gameFens.length },
             }));
 
-            try {
-                const { reply } = await sendChatMessage({
-                    fen: state.fen,
-                    message: content,
-                    history,
-                });
+            // 2. Stream evaluations over WebSocket
+            const wsBase = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000")
+                .replace(/^http/, "ws");
 
-                const assistantMsg: ChatMessage = {
-                    id: `a-${Date.now()}`,
-                    role: "assistant",
-                    content: reply,
-                    timestamp: new Date(),
+            await new Promise<void>((resolve, reject) => {
+                const ws = new WebSocket(`${wsBase}/analyze/stream`);
+                wsRef.current = ws;
+
+                // 5-minute hard timeout
+                const timer = setTimeout(() => {
+                    ws.close();
+                    reject(new Error("Game analysis timed out after 5 minutes."));
+                }, 300_000);
+
+                ws.onopen = () => {
+                    ws.send(JSON.stringify({ fens: gameFens, depth: DEFAULT_DEPTH }));
                 };
 
-                setState((s) => ({
-                    ...s,
-                    chatMessages: [...s.chatMessages, assistantMsg],
-                    isChatLoading: false,
-                }));
-            } catch (err) {
-                const errorMsg: ChatMessage = {
-                    id: `e-${Date.now()}`,
-                    role: "assistant",
-                    content: "Sorry, I couldn't process your request. Please try again.",
-                    timestamp: new Date(),
+                ws.onmessage = (event) => {
+                    if (runIdRef.current !== runId) { ws.close(); return; }
+
+                    const msg = JSON.parse(event.data as string) as {
+                        type: string;
+                        index?: number;
+                        result?: AnalysisResult;
+                        message?: string;
+                    };
+
+                    if (msg.type === "eval" && msg.index !== undefined && msg.result) {
+                        const analysis = toPositionAnalysis(msg.result);
+                        setState((s) => {
+                            const next = {
+                                ...s,
+                                analysisByMoveIndex: {
+                                    ...s.analysisByMoveIndex,
+                                    [msg.index!]: analysis,
+                                },
+                                gameAnalysisProgress: {
+                                    completed: s.gameAnalysisProgress.completed + 1,
+                                    total:     s.gameAnalysisProgress.total,
+                                },
+                            };
+                            // Update visible eval if this is the current position
+                            if (msg.index === s.currentMoveIndex) {
+                                next.evaluation     = analysis.evaluation;
+                                next.mate           = analysis.mate;
+                                next.bestMove       = analysis.bestMove;
+                                next.bestMoveArrows = analysis.bestMoveArrows;
+                                next.depth          = analysis.depth;
+                            }
+                            return next;
+                        });
+                    } else if (msg.type === "done") {
+                        clearTimeout(timer);
+                        ws.close();
+                        wsRef.current = null;
+                        resolve();
+                    } else if (msg.type === "error" && !msg.index) {
+                        // Only fatal if it's a stream-level error (no index)
+                        clearTimeout(timer);
+                        ws.close();
+                        wsRef.current = null;
+                        reject(new Error(msg.message ?? "Stream error"));
+                    }
                 };
 
-                setState((s) => ({
+                ws.onerror = () => {
+                    clearTimeout(timer);
+                    wsRef.current = null;
+                    reject(new Error("WebSocket connection failed"));
+                };
+
+                ws.onclose = (event) => {
+                    clearTimeout(timer);
+                    wsRef.current = null;
+                    // Only reject on unexpected close (not our own ws.close() calls)
+                    if (!event.wasClean && runIdRef.current === runId) {
+                        reject(new Error("WebSocket closed unexpectedly"));
+                    }
+                };
+            });
+
+            setState((s) => {
+                if (runIdRef.current !== runId) return s;
+                const curr = s.analysisByMoveIndex[s.currentMoveIndex];
+                return {
                     ...s,
-                    chatMessages: [...s.chatMessages, errorMsg],
-                    isChatLoading: false,
-                    error: err instanceof Error ? err.message : "Chat error",
-                }));
-            }
-        },
-        [state.chatMessages, state.fen]
+                    isAnalyzing:     false,
+                    isGameAnalyzing: false,
+                    gameAnalysisProgress: {
+                        completed: gameFens.length,
+                        total:     gameFens.length,
+                    },
+                    ...(curr
+                        ? {
+                            evaluation:     curr.evaluation,
+                            mate:           curr.mate,
+                            bestMove:       curr.bestMove,
+                            bestMoveArrows: curr.bestMoveArrows,
+                            depth:          curr.depth,
+                          }
+                        : {}),
+                };
+            });
+
+        } catch (err) {
+            if (runIdRef.current !== runId) return;
+            setState((s) => ({
+                ...s,
+                isImporting:     false,
+                isAnalyzing:     false,
+                isGameAnalyzing: false,
+                error: err instanceof Error ? err.message : "Import failed",
+            }));
+        }
+    }, []);
+
+    const clearError = useCallback(
+        () => setState((s) => ({ ...s, error: null })),
+        []
     );
-
-    const clearError = useCallback(() => setState((s) => ({ ...s, error: null })), []);
 
     return {
         ...state,
@@ -407,7 +348,6 @@ export function useAnalysis() {
         goBack,
         goForward,
         importPgn,
-        sendMessage,
         clearError,
     };
 }

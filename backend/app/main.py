@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 from app.api.routes.analyze import router as analyze_router
 from app.api.routes.game import router as game_router
 from app.api.routes.chat import router as chat_router
-from app.api.routes.opening import router as opening_router
 from app.db.session import init_db
 from app.services.engine_service import close_engine
 
@@ -46,7 +45,6 @@ app.add_middleware(
 app.include_router(analyze_router)
 app.include_router(game_router)
 app.include_router(chat_router)
-app.include_router(opening_router)
 
 
 @app.get("/health")

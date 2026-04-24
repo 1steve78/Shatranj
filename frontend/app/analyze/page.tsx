@@ -1,24 +1,19 @@
 "use client";
-import { useEffect, Suspense, useState, useRef, useMemo } from "react";
+import { useEffect, Suspense, useState, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
 import ChessBoard from "@/components/ChessBoard";
 import EvalBar from "@/components/EvalBar";
 import MoveList from "@/components/MoveList";
-import ChatBox from "@/components/ChatBox";
-import AccuracyGauge from "@/components/AccuracyGauge";
-import MoveTimeline from "@/components/MoveTimeline";
-import { getMoveClassification } from "@/lib/analysisLogic";
 import { useAnalysis } from "@/hooks/useAnalysis";
 
 function AnalyzePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const {
-    fen, evaluation, mate, bestMove, bestMoveArrows, depth, moves, currentMoveIndex, opening,
-    currentMoveInsight, gameAnalysisProgress, chatMessages, isChatLoading, isAnalyzing, isGameAnalyzing, isImporting, error,
-    analyze, goToMove, goBack, goForward, importPgn, sendMessage, clearError,
-    analysisByMoveIndex, parsedGame
+    fen, evaluation, mate, bestMove, bestMoveArrows, depth, moves, currentMoveIndex,
+    gameAnalysisProgress, isAnalyzing, isGameAnalyzing, isImporting, error,
+    analyze, goToMove, goBack, goForward, importPgn, clearError,
   } = useAnalysis();
 
   const [flipped, setFlipped] = useState(false);
@@ -26,28 +21,7 @@ function AnalyzePage() {
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState("");
   const [copyLabel, setCopyLabel] = useState("Copy FEN");
-  const [activePanel, setActivePanel] = useState<"moves" | "chat">("moves");
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const { whiteAccuracy, blackAccuracy } = useMemo(() => {
-    if (!parsedGame) return { whiteAccuracy: 0, blackAccuracy: 0 };
-    const wAccs: number[] = [];
-    const bAccs: number[] = [];
-    for (let i = 1; i <= parsedGame.moves.length; i++) {
-        const isWhite = i % 2 !== 0;
-        const prev = analysisByMoveIndex[i - 1];
-        const curr = analysisByMoveIndex[i];
-        if (prev && curr) {
-            const { type, accuracy } = getMoveClassification(prev, curr, isWhite);
-            if (type !== "pending") {
-                if (isWhite) wAccs.push(accuracy);
-                else bAccs.push(accuracy);
-            }
-        }
-    }
-    const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-    return { whiteAccuracy: avg(wAccs), blackAccuracy: avg(bAccs) };
-  }, [parsedGame, analysisByMoveIndex]);
 
   useEffect(() => {
     const pgn = searchParams.get("pgn");
@@ -130,19 +104,9 @@ function AnalyzePage() {
         ? "White better"
         : "Black better";
 
-  const isWritingCoachNotes = isGameAnalyzing
-    && gameAnalysisProgress.total > 0
-    && gameAnalysisProgress.completed >= gameAnalysisProgress.total;
-
-  const boardLoadingLabel = isWritingCoachNotes
-    ? "Writing coach notes"
-    : gameAnalysisProgress.total > 1
+  const boardLoadingLabel = gameAnalysisProgress.total > 1
     ? `Analyzing ${gameAnalysisProgress.completed}/${gameAnalysisProgress.total} positions`
     : "Analyzing position";
-
-  const coachNoteText = isGameAnalyzing
-    ? boardLoadingLabel
-    : currentMoveInsight;
 
   return (
     <div>
@@ -764,15 +728,6 @@ function AnalyzePage() {
           </div>
 
           <div className="topbar-center">
-            {opening && (
-              <>
-                <div className="opening-badge">
-                  <span className="opening-eco">{opening.eco}</span>
-                  {opening.name}
-                </div>
-                <div className="topbar-divider" />
-              </>
-            )}
             <div className="eval-pill">
               {isAnalyzing && <div className="analyzing-dot" />}
               <span className="eval-score" style={{ color: evalColor }}>{evalText}</span>
@@ -813,12 +768,6 @@ function AnalyzePage() {
 
           {/* Board + controls */}
           <div className="center-panel">
-            {coachNoteText && (
-              <div className={`coach-note-card${isGameAnalyzing ? " loading" : ""}`}>
-                <span className="coach-note-icon" aria-hidden="true">{"\u2658"}</span>
-                <span className="coach-note-text">{coachNoteText}</span>
-              </div>
-            )}
 
             <div className="player-label">
               <div className="player-name">
@@ -888,53 +837,18 @@ function AnalyzePage() {
             <div className="kbd-hint">← → to navigate · F to flip</div>
           </div>
 
-          {/* Right panel */}
-          <div className="right-panel" style={{ overflowY: "auto" }}>
-            {parsedGame && parsedGame.moves.length > 0 && (
-              <div style={{ padding: "16px 0", borderBottom: "1px solid #1a1510", background: "#0a0805" }}>
-                <AccuracyGauge whiteAccuracy={whiteAccuracy} blackAccuracy={blackAccuracy} />
-              </div>
-            )}
+          {/* Right panel — moves only */}
+          <div className="right-panel">
             <div className="panel-tabs">
-              <button
-                className={`panel-tab${activePanel === "moves" ? " active" : ""}`}
-                onClick={() => setActivePanel("moves")}
-              >
-                Moves
-              </button>
-              <button
-                className={`panel-tab${activePanel === "chat" ? " active" : ""}`}
-                onClick={() => setActivePanel("chat")}
-              >
-                Ask AI
-              </button>
+              <button className="panel-tab active">Moves</button>
             </div>
             <div className="panel-content">
-              {activePanel === "moves" ? (
-                <MoveList
-                  moves={moves}
-                  currentMoveIndex={currentMoveIndex}
-                  onMoveClick={goToMove}
-                />
-              ) : (
-                <ChatBox
-                  messages={chatMessages}
-                  onSendMessage={sendMessage}
-                  isLoading={isChatLoading}
-                  placeholder="Ask about this position…"
-                />
-              )}
+              <MoveList
+                moves={moves}
+                currentMoveIndex={currentMoveIndex}
+                onMoveClick={goToMove}
+              />
             </div>
-            
-            {parsedGame && parsedGame.moves.length > 0 && (
-                <MoveTimeline 
-                    totalMoves={parsedGame.moves.length}
-                    analysisByMoveIndex={analysisByMoveIndex}
-                    currentMoveIndex={currentMoveIndex}
-                    onMoveClick={goToMove}
-                />
-            )}
-
             <div className="fen-strip">
               <span className="fen-text">{fen}</span>
               <button className="fen-copy-btn" onClick={copyFen}>{copyLabel}</button>
